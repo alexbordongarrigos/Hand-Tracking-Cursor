@@ -70,6 +70,7 @@ export default function App() {
   });
   const [clickImage, setClickImage] = useState<string | null>(null);
   const [clickImageHotspot, setClickImageHotspot] = useState({ x: 50, y: 50 });
+  const [wsUrl, setWsUrl] = useState(() => localStorage.getItem('wsUrl') || 'ws://localhost:3001');
 
   // Refs for mutable state in the animation loop
   const handLandmarkerRef = useRef<HandLandmarker | null>(null);
@@ -107,20 +108,29 @@ export default function App() {
   useEffect(() => {
     let reconnectTimeout: NodeJS.Timeout;
     const connectWS = () => {
-      const ws = new WebSocket('ws://localhost:3001');
-      ws.onopen = () => console.log('WebSocket connected');
-      ws.onclose = () => {
-        console.log('WebSocket disconnected, reconnecting...');
-        reconnectTimeout = setTimeout(connectWS, 3000);
-      };
-      wsRef.current = ws;
+      try {
+        const ws = new WebSocket(wsUrl);
+        ws.onopen = () => console.log('WebSocket connected to', wsUrl);
+        ws.onclose = () => {
+          console.log('WebSocket disconnected, reconnecting...');
+          reconnectTimeout = setTimeout(connectWS, 3000);
+        };
+        wsRef.current = ws;
+      } catch (e) {
+        console.error('Invalid WebSocket URL', e);
+      }
     };
     connectWS();
     return () => {
       clearTimeout(reconnectTimeout);
       if (wsRef.current) wsRef.current.close();
     };
-  }, []);
+  }, [wsUrl]);
+
+  const handleWsUrlChange = (newUrl: string) => {
+    setWsUrl(newUrl);
+    localStorage.setItem('wsUrl', newUrl);
+  };
 
   useEffect(() => {
     colorModeRef.current = colorMode;
@@ -665,8 +675,27 @@ export default function App() {
             </div>
 
             <div className="space-y-6">
-              {/* Movement & Sensitivity */}
+              {/* Connection */}
               <div>
+                <h3 className="text-sm font-medium text-white mb-3">Conexión Backend</h3>
+                <div className="mb-4">
+                  <label className="block text-xs text-slate-400 mb-2">URL del WebSocket</label>
+                  <input
+                    type="text"
+                    value={wsUrl}
+                    onChange={(e) => handleWsUrlChange(e.target.value)}
+                    placeholder="ws://localhost:3001 o ws://IP:3001"
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-sm text-white outline-none focus:border-blue-500 transition-colors font-mono"
+                  />
+                  <p className="text-xs text-slate-500 mt-1">
+                    Usa ws://localhost:3001 si usas la web en este mismo dispositivo. 
+                    Si la conectas desde otro (móvil, tablet u otra PC), ingresa la IP local de tu Mac (ej. ws://192.168.1.100:3001).
+                  </p>
+                </div>
+              </div>
+
+              {/* Movement & Sensitivity */}
+              <div className="pt-4 border-t border-slate-700/50">
                 <h3 className="text-sm font-medium text-white mb-3">Movimiento</h3>
                 
                 <div className="mb-4">

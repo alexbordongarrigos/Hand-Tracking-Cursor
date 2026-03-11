@@ -1014,81 +1014,84 @@ export default function App() {
           </div>
         );
       })()}
-        {/* Onboarding Modal - Using fixed inset with high z-index and pointer-events-auto */}
-        {showOnboarding && (
-          <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/90 backdrop-blur-md animate-in fade-in duration-300 pointer-events-auto">
-            <div className="bg-slate-900 border border-slate-700/50 rounded-3xl p-8 max-w-lg w-full shadow-2xl overflow-y-auto max-h-[90vh] ring-1 ring-white/10">
-              <div className="flex justify-between items-center mb-6">
-                <h2 className="text-2xl font-bold text-white flex items-center gap-3">
-                  <div className="p-2 bg-blue-500 rounded-lg">
-                    <MousePointer2 className="w-6 h-6 text-white" />
-                  </div>
-                  Configuración Inicial
-                </h2>
-                <button 
-                  onClick={closeOnboarding}
-                  className="p-2 hover:bg-white/10 rounded-full transition-colors"
-                >
-                  <X className="w-6 h-6 text-slate-400" />
-                </button>
-              </div>
-
-              <div className="space-y-6">
-                {/* Step 1 */}
-                <div className="flex gap-4">
-                  <div className="flex-none w-8 h-8 rounded-full bg-blue-500/20 border border-blue-500/50 flex items-center justify-center text-blue-400 font-bold">1</div>
-                  <div>
-                    <h3 className="text-white font-semibold mb-1 text-base">Inicia el Servidor en tu Mac</h3>
-                    <p className="text-slate-400 text-sm mb-2">Descarga y ejecuta el script en tu computadora:</p>
-                    <code className="block p-2 bg-black/50 rounded-lg text-xs text-blue-300 border border-white/5 whitespace-pre-wrap">python3 mouse_controller.py</code>
-                  </div>
-                </div>
-
-                {/* Step 2 */}
-                <div className="flex gap-4">
-                  <div className="flex-none w-8 h-8 rounded-full bg-blue-500/20 border border-blue-500/50 flex items-center justify-center text-blue-400 font-bold">2</div>
-                  <div>
-                    <h3 className="text-white font-semibold mb-1 text-base">Permisos de macOS</h3>
-                    <p className="text-slate-400 text-sm">Tu Mac pedirá permisos de <b>Accesibilidad</b> para mover el ratón. Asegúrate de habilitar la Terminal o tu Editor de Código en:</p>
-                    <p className="text-[10px] text-slate-500 mt-1 italic">Settings &gt; Privacy &amp; Security &gt; Accessibility</p>
-                  </div>
-                </div>
-
-                {/* Step 3 */}
-                <div className="flex gap-4">
-                  <div className="flex-none w-8 h-8 rounded-full bg-blue-500/20 border border-blue-500/50 flex items-center justify-center text-blue-400 font-bold">3</div>
-                  <div>
-                    <h3 className="text-white font-semibold mb-1 text-base">Conecta el Dispositivo</h3>
-                    <p className="text-slate-400 text-sm mb-3">Ingresa la IP que muestra la consola de tu Mac:</p>
-                    <div className="flex gap-2">
-                      <input 
-                        type="text" 
-                        value={wsUrl}
-                        onChange={(e) => handleWsUrlChange(e.target.value)}
-                        placeholder="ws://192.168.1.XX:3001"
-                        className="flex-1 bg-black/40 border border-slate-700/50 rounded-xl px-4 py-2 text-white text-sm focus:outline-none focus:border-blue-500"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <div className="p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-2xl flex items-start gap-3">
-                  <Info className="w-5 h-5 text-emerald-400 flex-none mt-0.5" />
-                  <p className="text-[10px] text-emerald-300/80 leading-relaxed uppercase tracking-wider">
-                    <b>Tip de Fondo:</b> Activa el modo <b>PiP</b> (icono i arriba) para funcionamiento continuo.
-                  </p>
-                </div>
-
-                <button 
-                  onClick={closeOnboarding}
-                  className="w-full py-4 bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white font-bold rounded-2xl transition-all shadow-lg shadow-blue-500/20"
-                >
-                  ¡Entendido, vamos!
-                </button>
-              </div>
-            </div>
-          </div>
         )}
       </div>
+
+      {/* Onboarding Modal - Global Fixed Position */}
+      {showOnboarding && (
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-black/90 backdrop-blur-md animate-in fade-in duration-300 pointer-events-auto">
+          <div className="bg-slate-900 border border-slate-700/50 rounded-3xl p-8 max-w-lg w-full shadow-2xl overflow-y-auto max-h-[90vh] ring-1 ring-white/10">
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-2xl font-bold text-white flex items-center gap-3">
+                <div className="p-2 bg-blue-500 rounded-lg">
+                  <MousePointer2 className="w-6 h-6 text-white" />
+                </div>
+                Configuración Inicial
+              </h2>
+              <button 
+                onClick={closeOnboarding}
+                className="p-2 hover:bg-white/10 rounded-full transition-colors"
+              >
+                <X className="w-6 h-6 text-slate-400" />
+              </button>
+            </div>
+
+            <div className="space-y-6 text-left">
+              {/* Step 1 */}
+              <div className="flex gap-4">
+                <div className="flex-none w-8 h-8 rounded-full bg-blue-500/20 border border-blue-500/50 flex items-center justify-center text-blue-400 font-bold">1</div>
+                <div>
+                  <h3 className="text-white font-semibold mb-1 text-base leading-tight">Inicia el Servidor en tu Mac</h3>
+                  <p className="text-slate-400 text-sm mb-2">Corre el script y escanea el QR o link de la terminal.</p>
+                  <code className="block p-2 bg-black/50 rounded-lg text-xs text-blue-300 border border-white/5 whitespace-pre-wrap">python3 mouse_controller.py</code>
+                </div>
+              </div>
+
+              {/* Step 2 */}
+              <div className="flex gap-4">
+                <div className="flex-none w-8 h-8 rounded-full bg-blue-500/20 border border-blue-500/50 flex items-center justify-center text-blue-400 font-bold">2</div>
+                <div>
+                  <h3 className="text-white font-semibold mb-1 text-base leading-tight">Permisos de macOS</h3>
+                  <p className="text-slate-400 text-sm">Habilita la Accesibilidad para tu Terminal en:</p>
+                  <p className="text-[10px] text-slate-500 mt-1 italic">Settings &gt; Privacy &amp; Security &gt; Accessibility</p>
+                </div>
+              </div>
+
+              {/* Step 3 */}
+              <div className="flex gap-4">
+                <div className="flex-none w-8 h-8 rounded-full bg-blue-500/20 border border-blue-500/50 flex items-center justify-center text-blue-400 font-bold">3</div>
+                <div>
+                  <h3 className="text-white font-semibold mb-1 text-base leading-tight">Conecta el Dispositivo</h3>
+                  <p className="text-slate-400 text-sm mb-3">Si usaste el link automático, ya deberías estar conectado:</p>
+                  <div className="flex gap-2">
+                    <input 
+                      type="text" 
+                      value={wsUrl}
+                      onChange={(e) => handleWsUrlChange(e.target.value)}
+                      placeholder="ws://192.168.1.XX:3001"
+                      className="flex-1 bg-black/40 border border-slate-700/50 rounded-xl px-4 py-2 text-white text-sm focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-2xl flex items-start gap-3">
+                <Info className="w-5 h-5 text-emerald-400 flex-none mt-0.5" />
+                <p className="text-[10px] text-emerald-300/80 leading-relaxed uppercase tracking-wider">
+                  <b>Tip Pro:</b> Activa el modo <b>PiP</b> (icono i arriba) para que el cursor no se detenga al cambiar de app.
+                </p>
+              </div>
+
+              <button 
+                onClick={closeOnboarding}
+                className="w-full py-4 bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white font-bold rounded-2xl transition-all shadow-lg shadow-blue-500/20 active:scale-95"
+              >
+                ¡Entendido, vamos!
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
     );
 }

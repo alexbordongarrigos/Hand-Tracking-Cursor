@@ -660,20 +660,14 @@ export default function App() {
 
           <div className="flex gap-2 pointer-events-auto">
             <button 
-              onClick={() => {
-                console.log("Settings button clicked");
-                setSettingsOpen(true);
-              }}
+              onClick={() => setSettingsOpen(true)}
               className="p-3 rounded-xl border bg-slate-800/80 border-slate-700/50 text-slate-400 hover:bg-slate-700 hover:text-white transition-colors"
               title="Ajustes del Cursor"
             >
               <Settings2 className="w-5 h-5" />
             </button>
             <button 
-              onClick={() => {
-                console.log("Guide button clicked");
-                setShowOnboarding(true);
-              }}
+              onClick={() => setShowOnboarding(true)}
               className="p-3 rounded-xl border bg-slate-800/80 border-slate-700/50 text-slate-400 hover:bg-slate-700 transition-colors"
               title="Guía de Configuración"
             >

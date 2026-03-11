@@ -76,6 +76,9 @@ export default function App() {
     ring: 'scroll',
     pinky: 'none'
   });
+  const [angleControlEnabled, setAngleControlEnabled] = useState(false);
+  const [angleSensitivity, setAngleSensitivity] = useState(1.5);
+  const [activationThreshold, setActivationThreshold] = useState(45);
   const [clickImage, setClickImage] = useState<string | null>(null);
   const [clickImageHotspot, setClickImageHotspot] = useState({ x: 50, y: 50 });
   const [wsUrl, setWsUrl] = useState(() => {
@@ -107,6 +110,7 @@ export default function App() {
   const requestRef = useRef<number>();
   const lastVideoTimeRef = useRef(-1);
   const smoothedPosRef = useRef({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
+  const smoothedNormPosRef = useRef({ x: 0.5, y: 0.5 });
   const smoothedAngleRef = useRef(0);
   const isLeftClickRef = useRef(false);
   const isRightClickRef = useRef(false);
@@ -122,6 +126,9 @@ export default function App() {
   const sensitivityYRef = useRef(sensitivityY);
   const smoothingRef = useRef(smoothing);
   const gestureMapRef = useRef(gestureMap);
+  const angleControlRef = useRef(angleControlEnabled);
+  const angleSensitivityRef = useRef(angleSensitivity);
+  const activationThresholdRef = useRef(activationThreshold);
   
   // Custom gesture states
   const activeGesturesRef = useRef<Record<string, boolean>>({
@@ -214,6 +221,18 @@ export default function App() {
   useEffect(() => {
     smoothingRef.current = smoothing;
   }, [smoothing]);
+
+  useEffect(() => {
+    angleControlRef.current = angleControlEnabled;
+  }, [angleControlEnabled]);
+
+  useEffect(() => {
+    angleSensitivityRef.current = angleSensitivity;
+  }, [angleSensitivity]);
+
+  useEffect(() => {
+    activationThresholdRef.current = activationThreshold;
+  }, [activationThreshold]);
 
   useEffect(() => {
     // Create a hidden canvas for color sampling
@@ -410,80 +429,96 @@ export default function App() {
           }
 
           // 1. Calculate pointing direction / cursor position
-          // Use Middle Finger MCP (9) instead of Index Tip (8) for stable hand tracking
           const trackingPoint = landmarks[9];
           const wrist = landmarks[0];
+          
+          let rawNormX = 0;
+          let rawNormY = 0;
+          const s = smoothingRef.current;
 
-          const rawX = 1.0 - trackingPoint.x; 
-          const rawY = trackingPoint.y;
-
-          // Calculate angle (wrist to middle finger MCP)
+          // Angle calculation for cursor rotation visual
           const dx = -(trackingPoint.x - wrist.x); // Mirrored X
           const dy = trackingPoint.y - wrist.y;
           const angleRad = Math.atan2(dy, dx);
-          let targetAngle = angleRad * (180 / Math.PI) + 90;
+          let targetAngleValue = angleRad * (180 / Math.PI) + 90;
 
           let currentAngle = smoothedAngleRef.current;
-          let diff = targetAngle - currentAngle;
-          while (diff < -180) diff += 360;
-          while (diff > 180) diff -= 360;
-          const s = smoothingRef.current;
-          smoothedAngleRef.current = currentAngle + diff * (1 - s);
+          let angleDiff = targetAngleValue - currentAngle;
+          while (angleDiff < -180) angleDiff += 360;
+          while (angleDiff > 180) angleDiff -= 360;
+          smoothedAngleRef.current = currentAngle + angleDiff * (1 - s);
 
-          // Apply scaling to allow reaching edges without moving hand to the very edge of the camera
-          // Center is 0.5, 0.5
-          const scaledX = 0.5 + (rawX - 0.5) * sensitivityXRef.current;
-          const scaledY = 0.5 + (rawY - 0.5) * sensitivityYRef.current - yOffsetRef.current;
+          if (angleControlRef.current) {
+            // --- LASER POINTER MODE (Rotation based) ---
+            const mcp = landmarks[9];
+            const vx = mcp.x - wrist.x;
+            const vy = mcp.y - wrist.y;
+            
+            // Activation threshold check (Angle gating)
+            const displacement = Math.sqrt(vx * vx + vy * vy);
+            const pointingAngle = displacement * 180; 
+            
+            if (pointingAngle > activationThresholdRef.current) {
+              // Outside activation zone: Use last smoothed position (freeze/gate)
+              rawNormX = smoothedNormPosRef.current.x;
+              rawNormY = smoothedNormPosRef.current.y;
+            } else {
+              // Project target: Hand Position + (Rotation * Sensitivity)
+              // (1 - mcp.x) mirrors the hand pos
+              // vx is MCP relative to wrist. If vx > 0 (tilted right), we want rawNormX to increase.
+              // But since we use (1 - mcp.x), we subtract (vx * sens)
+              rawNormX = (1 - mcp.x) - (vx * angleSensitivityRef.current);
+              rawNormY = mcp.y + (vy * angleSensitivityRef.current);
+            }
+          } else {
+            // --- STANDARD MAPPING MODE ---
+            const invertedX = 1.0 - trackingPoint.x;
+            rawNormX = 0.5 + (invertedX - 0.5) * sensitivityXRef.current;
+            rawNormY = 0.5 + (trackingPoint.y - 0.5) * sensitivityYRef.current - yOffsetRef.current;
+          }
 
-          // Clamp to 0-1
-          const clampedX = Math.max(0, Math.min(1, scaledX));
-          const clampedY = Math.max(0, Math.min(1, scaledY));
+          // Clamp to normalized boundaries
+          const clampedX = Math.max(0, Math.min(1, rawNormX));
+          const clampedY = Math.max(0, Math.min(1, rawNormY));
 
-          // Map to screen coordinates
-          const targetX = clampedX * window.innerWidth;
-          const targetY = clampedY * window.innerHeight;
+          // Apply EMA Smoothing on Normalized Values (Fixes "smoothing only on page")
+          smoothedNormPosRef.current.x = (smoothedNormPosRef.current.x * s) + (clampedX * (1 - s));
+          smoothedNormPosRef.current.y = (smoothedNormPosRef.current.y * s) + (clampedY * (1 - s));
 
-          // Apply Exponential Moving Average for smoothing
-          smoothedPosRef.current.x = smoothedPosRef.current.x * s + targetX * (1 - s);
-          smoothedPosRef.current.y = smoothedPosRef.current.y * s + targetY * (1 - s);
+          // Map to local screen pixels for UI
+          const uiX = smoothedNormPosRef.current.x * window.innerWidth;
+          const uiY = smoothedNormPosRef.current.y * window.innerHeight;
+          smoothedPosRef.current = { x: uiX, y: uiY };
 
           // Extract Color if dynamic
-          let currentColor = '#3b82f6'; // fallback
+          let currentColor = '#3b82f6';
           if (colorModeRef.current === 'dynamic' && colorCanvasRef.current) {
             const colorCtx = colorCanvasRef.current.getContext('2d', { willReadFrequently: true });
             if (colorCtx) {
-              // Use un-mirrored X for video sampling
               const vx = trackingPoint.x * video.videoWidth;
               const vy = trackingPoint.y * video.videoHeight;
-              const cx = Math.max(0, Math.min(video.videoWidth - 1, vx));
-              const cy = Math.max(0, Math.min(video.videoHeight - 1, vy));
-              
-              colorCtx.drawImage(video, cx, cy, 1, 1, 0, 0, 1, 1);
+              colorCtx.drawImage(video, Math.max(0, Math.min(video.videoWidth-1, vx)), Math.max(0, Math.min(video.videoHeight-1, vy)), 1, 1, 0, 0, 1, 1);
               const data = colorCtx.getImageData(0, 0, 1, 1).data;
-              
               smoothedRgbRef.current.r = smoothedRgbRef.current.r * 0.9 + data[0] * 0.1;
               smoothedRgbRef.current.g = smoothedRgbRef.current.g * 0.9 + data[1] * 0.1;
               smoothedRgbRef.current.b = smoothedRgbRef.current.b * 0.9 + data[2] * 0.1;
-              
               currentColor = `rgb(${Math.round(smoothedRgbRef.current.r)}, ${Math.round(smoothedRgbRef.current.g)}, ${Math.round(smoothedRgbRef.current.b)})`;
             }
           }
 
           setCursorPos({ 
-            x: smoothedPosRef.current.x, 
-            y: smoothedPosRef.current.y,
+            x: uiX, 
+            y: uiY,
             angle: smoothedAngleRef.current,
             color: currentColor
           } as any);
 
-          // Send to Backend
+          // Send to Backend (Using SMOOTHED coordinates)
           if (wsRef.current?.readyState === WebSocket.OPEN) {
-            // Send normalized coordinates (0 to 1) instead of screen pixels
-            // This allows the receiver (Mac) to scale it to its own resolution
             wsRef.current.send(JSON.stringify({ 
               type: 'move', 
-              nx: clampedX, 
-              ny: clampedY 
+              nx: smoothedNormPosRef.current.x, 
+              ny: smoothedNormPosRef.current.y 
             }));
           }
 
@@ -975,6 +1010,62 @@ export default function App() {
                     >
                       Quitar imagen
                     </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Angle Control (Advanced) */}
+              <div className="pt-4 border-t border-slate-700/50">
+                <h3 className="text-sm font-medium text-white mb-3 flex items-center gap-2">
+                  <MousePointer2 className="w-4 h-4 text-purple-400" />
+                  Control por Ángulo (Puntero Láser)
+                </h3>
+                
+                <label className="flex items-center gap-3 text-sm font-medium text-slate-300 mb-4 cursor-pointer">
+                  <input 
+                    type="checkbox" 
+                    checked={angleControlEnabled} 
+                    onChange={e => setAngleControlEnabled(e.target.checked)} 
+                    className="w-4 h-4 rounded bg-slate-900 border-slate-700 text-purple-500 focus:ring-purple-500 focus:ring-offset-slate-800" 
+                  />
+                  Activar modo Puntero Láser
+                </label>
+
+                {angleControlEnabled && (
+                  <div className="space-y-4 pl-7 pb-2">
+                    <div>
+                      <div className="flex justify-between text-xs text-slate-400 mb-2">
+                        <span>Sensibilidad de Ángulo</span>
+                        <span className="font-mono">{angleSensitivity.toFixed(1)}x</span>
+                      </div>
+                      <input 
+                        type="range" 
+                        min="0.5" 
+                        max="5.0" 
+                        step="0.1" 
+                        value={angleSensitivity} 
+                        onChange={e => setAngleSensitivity(parseFloat(e.target.value))} 
+                        className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-purple-500" 
+                      />
+                      <p className="text-[10px] text-slate-500 mt-1">Multiplica la rotación de la mano para cubrir toda la pantalla.</p>
+                    </div>
+
+                    <div>
+                      <div className="flex justify-between text-xs text-slate-400 mb-2">
+                        <span>Umbral de Activación</span>
+                        <span className="font-mono">{activationThreshold}°</span>
+                      </div>
+                      <input 
+                        type="range" 
+                        min="10" 
+                        max="90" 
+                        step="5" 
+                        value={activationThreshold} 
+                        onChange={e => setActivationThreshold(parseInt(e.target.value))} 
+                        className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-purple-500" 
+                      />
+                      <p className="text-[10px] text-slate-500 mt-1">Si la mano apunta más allá de este ángulo, el seguimiento se detiene.</p>
+                    </div>
                   </div>
                 )}
               </div>

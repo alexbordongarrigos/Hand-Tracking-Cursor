@@ -68,11 +68,17 @@ def input_thread():
 
 def main():
     local_ip = get_local_ip()
-    print("="*50)
+    ws_url = f"ws://{local_ip}:3001"
+    web_app_url = f"https://hand-tracking-orpin.vercel.app/?ws={ws_url}"
+    
+    print("="*60)
     print("   HAND TRACKING CURSOR - SERVER STARTED")
-    print(f"   Local IP: {local_ip}")
-    print(f"   WebSocket URL for Mobile: ws://{local_ip}:3001")
-    print("="*50)
+    print("="*60)
+    print(f"   1. Local IP: {local_ip}")
+    print(f"   2. WebSocket: {ws_url}")
+    print("\n   🚀 CONFIGURACIÓN AUTOMÁTICA (Copia y abre en tu móvil):")
+    print(f"   {web_app_url}")
+    print("="*60)
     print("Running... (Press Ctrl+C to stop)")
     
     t = threading.Thread(target=input_thread, daemon=True)

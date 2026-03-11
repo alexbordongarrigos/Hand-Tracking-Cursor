@@ -5,6 +5,7 @@ import subprocess
 import threading
 import time
 import queue
+import socket
 from pynput.keyboard import Key, Controller as KeyboardController
 from pynput.mouse import Controller as MouseController, Button
 
@@ -15,6 +16,17 @@ pyautogui.PAUSE = 0.0
 command_queue = queue.Queue()
 keyboard = KeyboardController()
 mouse = MouseController()
+
+def get_local_ip():
+    try:
+        # Create a dummy socket to detect preferred outbound IP
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
 
 def prompt_mac_permissions():
     applescript = """
@@ -55,6 +67,14 @@ def input_thread():
             print(f"Input thread error: {e}", file=sys.stderr)
 
 def main():
+    local_ip = get_local_ip()
+    print("="*50)
+    print("   HAND TRACKING CURSOR - SERVER STARTED")
+    print(f"   Local IP: {local_ip}")
+    print(f"   WebSocket URL for Mobile: ws://{local_ip}:3001")
+    print("="*50)
+    print("Running... (Press Ctrl+C to stop)")
+    
     t = threading.Thread(target=input_thread, daemon=True)
     t.start()
     

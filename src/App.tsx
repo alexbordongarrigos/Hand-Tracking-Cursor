@@ -51,6 +51,8 @@ export default function App() {
   const [isRightClick, setIsRightClick] = useState(false);
   const [showDebug, setShowDebug] = useState(true);
   const [yOffset, setYOffset] = useState(0);
+  const [showOnboarding, setShowOnboarding] = useState(() => !localStorage.getItem('onboardingCompleted'));
+
 
   // New Creative Settings
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -132,6 +134,11 @@ export default function App() {
   const handleWsUrlChange = (newUrl: string) => {
     setWsUrl(newUrl);
     localStorage.setItem('wsUrl', newUrl);
+  };
+
+  const closeOnboarding = () => {
+    setShowOnboarding(false);
+    localStorage.setItem('onboardingCompleted', 'true');
   };
 
   useEffect(() => {
@@ -623,6 +630,13 @@ export default function App() {
               title="Ajustes del Cursor"
             >
               <Settings2 className="w-5 h-5" />
+            </button>
+            <button 
+              onClick={() => setShowOnboarding(true)}
+              className="p-3 rounded-xl border bg-slate-800/80 border-slate-700/50 text-slate-400 hover:bg-slate-700 transition-colors"
+              title="Guía de Configuración"
+            >
+              <Target className="w-5 h-5" />
             </button>
             <button 
               onClick={() => setShowDebug(!showDebug)}

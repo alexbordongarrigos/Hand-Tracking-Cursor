@@ -8,6 +8,8 @@ import time
 import queue
 import platform
 import socket
+import asyncio
+import websockets
 from pynput.keyboard import Key, Controller as KeyboardController
 from pynput.mouse import Controller as MouseController, Button
 
@@ -21,7 +23,6 @@ mouse = MouseController()
 
 def get_local_ip():
     try:
-        # Create a dummy socket to detect preferred outbound IP
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
         ip = s.getsockname()[0]
@@ -49,7 +50,6 @@ def execute_mac_applescript(script):
     if platform.system() != 'Darwin':
         return
     try:
-        # Timeout is low (1s) so we instantly know if a permission prompt is blocking the background execution
         subprocess.run(['osascript', '-e', script], check=False, timeout=1.0)
     except subprocess.TimeoutExpired:
         print("AppleScript blocked by macOS permissions. Prompting user to fix...", file=sys.stderr)
@@ -58,10 +58,8 @@ def execute_mac_applescript(script):
         print(f"AppleScript Error: {e}", file=sys.stderr)
 
 def press_hotkey(keys):
-    """Universal hotkey support for combinations like ['ctrl', 'alt', 'del'] or ['cmd', 'space']"""
     try:
-        print(f"Executing hotkey combination: {' + '.join(keys).upper()}")
-        # Map some common keys to platform-specific equivalents if needed
+        print(f"Executing hotkey: {' + '.join(keys).upper()}")
         mapped_keys = []
         for k in keys:
             k_lower = k.lower()
@@ -71,57 +69,35 @@ def press_hotkey(keys):
                 mapped_keys.append('ctrl')
             else:
                 mapped_keys.append(k_lower)
-        
         pyautogui.hotkey(*mapped_keys)
     except Exception as e:
         print(f"Hotkey Error: {e}", file=sys.stderr)
 
-def input_thread():
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            command = json.loads(line)
-            command_queue.put(command)
-        except json.JSONDecodeError:
-            pass
-        except Exception as e:
-            print(f"Input thread error: {e}", file=sys.stderr)
-
-def main():
-    local_ip = get_local_ip()
-    ws_url = f"ws://{local_ip}:3001"
-    web_app_url = f"https://hand-tracking-orpin.vercel.app/?ws={ws_url}"
-    os_name = platform.system()
-    
-    # Get current working directory and file path
-    current_file = os.path.abspath(__file__)
-    current_dir = os.path.dirname(current_file)
-    
-    print("="*60)
-    print("   HAND TRACKING CURSOR - SERVER STARTED")
-    print("="*60)
-    print(f"   💻 Sistema: {os_name}")
-    print(f"   📂 Ruta: {current_file}")
-    print(f"   1. Local IP: {local_ip}")
-    print(f"   2. WebSocket: {ws_url}")
-    print("\n   🚀 COMANDO PARA INICIAR (Copia esto):")
-    print(f"   cd \"{current_dir}\" && python3 mouse_controller.py")
-    print("\n   📱 ACCESO AUTOMÁTICO (Abre en tu móvil):")
-    print(f"   {web_app_url}")
-    print("="*60)
-    print("Running... (Press Ctrl+C to stop)")
-    
-    t = threading.Thread(target=input_thread, daemon=True)
-    t.start()
-    
+async def ws_handler(websocket):
+    print(f"New connection from {websocket.remote_address}")
     try:
-        while True:
+        async for message in websocket:
+            try:
+                command = json.loads(message)
+                command_queue.put(command)
+            except json.JSONDecodeError:
+                pass
+    except websockets.exceptions.ConnectionClosed:
+        print(f"Connection closed for {websocket.remote_address}")
+
+def worker_thread():
+    """Processes commands from the queue in a separate thread to avoid blocking the async loop"""
+    while True:
+        try:
             # Process all pending commands
             latest_move = None
             actions_to_run = []
             
+            # Wait for at least one command if queue is empty
+            if command_queue.empty():
+                time.sleep(0.01)
+                continue
+
             while not command_queue.empty():
                 try:
                     cmd = command_queue.get_nowait()
@@ -132,12 +108,10 @@ def main():
                 except queue.Empty:
                     break
             
-            # Execute all non-move actions in order
             for command in actions_to_run:
                 try:
                     action = command.get("type")
                     if action == "click":
-                        # using pynput for clicks now
                         btn_str = command.get("button", "left")
                         btn = Button.right if btn_str == "right" else Button.left
                         mouse.click(btn)
@@ -170,9 +144,8 @@ def main():
                         key = command.get("key")
                         if key:
                             key_lower = key.lower()
-                            print(f"Executing Key/F-Key: {key.upper()}")
+                            print(f"Executing Key: {key.upper()}")
                             if platform.system() == 'Darwin':
-                                # Hardware-feel mapping for Mac
                                 if key_lower == "f1": execute_mac_applescript('tell application "System Events" to key code 145')
                                 elif key_lower == "f2": execute_mac_applescript('tell application "System Events" to key code 144')
                                 elif key_lower == "f3": execute_mac_applescript('tell application "System Events" to key code 160')
@@ -191,28 +164,57 @@ def main():
                         if keys:
                             press_hotkey(keys)
                 except Exception as e:
-                    print(f"Error handling action: {e}", file=sys.stderr)
+                    print(f"Error executing action: {e}", file=sys.stderr)
             
-            # Execute only the latest move
             if latest_move:
                 try:
-                    # Get normalized coordinates (0.0 to 1.0)
-                    nx = latest_move.get("nx")
-                    ny = latest_move.get("ny")
-                    
+                    nx, ny = latest_move.get("nx"), latest_move.get("ny")
                     if nx is not None and ny is not None:
-                        # Scale to screen size dynamically
                         screen_w, screen_h = pyautogui.size()
-                        target_x = nx * screen_w
-                        target_y = ny * screen_h
-                        pyautogui.moveTo(target_x, target_y)
+                        pyautogui.moveTo(nx * screen_w, ny * screen_h)
                 except Exception as e:
                     print(f"Move error: {e}", file=sys.stderr)
-            
-            # Sleep ~100fps to avoid pegging CPU while waiting for moves
-            time.sleep(0.01)
-    except KeyboardInterrupt:
-        pass
+        except Exception as e:
+            print(f"Worker thread error: {e}", file=sys.stderr)
+        
+        time.sleep(0.01)
+
+async def main_async():
+    local_ip = get_local_ip()
+    ws_url = f"ws://{local_ip}:3001"
+    web_app_url = f"https://hand-tracking-orpin.vercel.app/?ws={ws_url}"
+    os_name = platform.system()
+    current_file = os.path.abspath(__file__)
+    current_dir = os.path.dirname(current_file)
+    
+    print("="*60)
+    print("   HAND TRACKING CURSOR - REMOTE SERVER")
+    print("="*60)
+    print(f"   💻 Sistema: {os_name}")
+    print(f"   📂 Ruta: {current_file}")
+    print(f"   1. Local IP: {local_ip}")
+    print(f"   2. WebSocket Server: Listening on port 3001")
+    
+    if platform.system() == 'Darwin':
+        print("\n   🍎 NOTA PARA MAC: Asegúrate de dar permisos de 'Accesibilidad' a tu Terminal")
+        print("      en Ajustes > Privacidad y Seguridad > Accesibilidad.")
+    print("\n   🚀 COMANDO PARA INICIAR:")
+    print(f"   cd \"{current_dir}\" && python3 mouse_controller.py")
+    print("\n   📱 ACCESO AUTOMÁTICO:")
+    print(f"   {web_app_url}")
+    print("="*60)
+    print("Running... (Press Ctrl+C to stop)")
+    
+    # Start worker thread
+    t = threading.Thread(target=worker_thread, daemon=True)
+    t.start()
+    
+    # Start WebSocket server
+    async with websockets.serve(ws_handler, "0.0.0.0", 3001):
+        await asyncio.Future()  # run forever
 
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.run(main_async())
+    except KeyboardInterrupt:
+        print("\nServer stopped.")

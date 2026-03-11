@@ -161,9 +161,16 @@ def main():
             # Execute only the latest move
             if latest_move:
                 try:
-                    x = latest_move.get("x")
-                    y = latest_move.get("y")
-                    pyautogui.moveTo(x, y)
+                    # Get normalized coordinates (0.0 to 1.0)
+                    nx = latest_move.get("nx")
+                    ny = latest_move.get("ny")
+                    
+                    if nx is not None and ny is not None:
+                        # Scale to screen size dynamically
+                        screen_w, screen_h = pyautogui.size()
+                        target_x = nx * screen_w
+                        target_y = ny * screen_h
+                        pyautogui.moveTo(target_x, target_y)
                 except Exception as e:
                     print(f"Move error: {e}", file=sys.stderr)
             

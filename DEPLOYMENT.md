@@ -40,4 +40,11 @@ Si quieres acceder al frontend (la web en GitHub Pages) desde tú teléfono o la
    - Ingresa: `ws://192.168.1.XX:3001` (reemplaza `192.168.1.XX` por tu IP).
    - ¡Cierra los ajustes y tu web se conectará directo a tu Mac!
 
-*Tip avanzado: Si quieres controlarlo usando datos móviles (fuera de casa), necesitarás usar una herramienta como `ngrok` en tu Mac para exponer el puerto 3001 de manera segura a internet (ej. `ngrok http 3001`) y usar la URL dada (ej. `wss://tu-url.ngrok.io`).*
+## 4. Modo Fondo (Picture-in-Picture)
+
+Para que el seguimiento siga funcionando incluso cuando cambies de pestaña o minimices el navegador:
+1. Asegúrate de que la cámara esté activa.
+2. Haz clic en el icono de **Información/Fondo** (i) en la parte superior derecha.
+3. Se abrirá una pequeña ventana flotante con el video de la cámara.
+4. **NO CIERRES** esa ventanita. Puedes moverla a una esquina o esconderla parcialmente.
+5. Mientras esa ventana esté abierta, el navegador mantendrá la cámara encendida y el seguimiento activo con prioridad total.

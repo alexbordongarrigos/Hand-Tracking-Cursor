@@ -71,6 +71,8 @@ export default function App() {
   const [clickImage, setClickImage] = useState<string | null>(null);
   const [clickImageHotspot, setClickImageHotspot] = useState({ x: 50, y: 50 });
   const [wsUrl, setWsUrl] = useState(() => localStorage.getItem('wsUrl') || 'ws://localhost:3001');
+  const [isPipActive, setIsPipActive] = useState(false);
+  const wakeLockRef = useRef<any>(null);
 
   // Refs for mutable state in the animation loop
   const handLandmarkerRef = useRef<HandLandmarker | null>(null);
@@ -212,6 +214,19 @@ export default function App() {
 
     initializeHandTracking();
 
+    // Wake Lock to prevent sleep
+    const requestWakeLock = async () => {
+      try {
+        if ('wakeLock' in navigator) {
+          wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
+          console.log('Wake Lock active');
+        }
+      } catch (err) {
+        console.error('Wake Lock error:', err);
+      }
+    };
+    requestWakeLock();
+
     return () => {
       active = false;
       if (requestRef.current) clearTimeout(requestRef.current);
@@ -220,8 +235,24 @@ export default function App() {
         const stream = videoRef.current.srcObject as MediaStream;
         stream.getTracks().forEach(track => track.stop());
       }
+      if (wakeLockRef.current) wakeLockRef.current.release();
     };
   }, []);
+
+  const togglePiP = async () => {
+    try {
+      if (!videoRef.current) return;
+      if (document.pictureInPictureElement) {
+        await document.exitPictureInPicture();
+        setIsPipActive(false);
+      } else {
+        await videoRef.current.requestPictureInPicture();
+        setIsPipActive(true);
+      }
+    } catch (error) {
+      console.error('PiP Error:', error);
+    }
+  };
 
   const calculateDistance = (p1: { x: number, y: number, z: number }, p2: { x: number, y: number, z: number }) => {
     return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2) + Math.pow(p1.z - p2.z, 2));
@@ -351,13 +382,13 @@ export default function App() {
 
           // Send to Backend
           if (wsRef.current?.readyState === WebSocket.OPEN) {
-            // Transform the smoothed coordinates to screen ratio
-            const screenRatioX = smoothedPosRef.current.x / window.innerWidth;
-            const screenRatioY = smoothedPosRef.current.y / window.innerHeight;
-            // Send position mapped to actual screen coordinates
-            const screenX = screenRatioX * window.screen.width;
-            const screenY = screenRatioY * window.screen.height;
-            wsRef.current.send(JSON.stringify({ type: 'move', x: screenX, y: screenY }));
+            // Send normalized coordinates (0 to 1) instead of screen pixels
+            // This allows the receiver (Mac) to scale it to its own resolution
+            wsRef.current.send(JSON.stringify({ 
+              type: 'move', 
+              nx: clampedX, 
+              ny: clampedY 
+            }));
           }
 
           // 2. Detect Gestures and Actions
@@ -599,6 +630,13 @@ export default function App() {
               title="Toggle Debug View"
             >
               <Camera className="w-5 h-5" />
+            </button>
+            <button 
+              onClick={togglePiP}
+              className={`p-3 rounded-xl border transition-colors ${isPipActive ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300' : 'bg-slate-800/80 border-slate-700/50 text-slate-400 hover:bg-slate-700'}`}
+              title="Activar Modo Fondo (Picture-in-Picture)"
+            >
+              <Info className="w-5 h-5" />
             </button>
           </div>
         </header>

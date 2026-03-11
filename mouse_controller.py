@@ -5,6 +5,7 @@ import subprocess
 import threading
 import time
 import queue
+import platform
 import socket
 from pynput.keyboard import Key, Controller as KeyboardController
 from pynput.mouse import Controller as MouseController, Button
@@ -44,6 +45,8 @@ def prompt_mac_permissions():
         pass
 
 def execute_mac_applescript(script):
+    if platform.system() != 'Darwin':
+        return
     try:
         # Timeout is low (1s) so we instantly know if a permission prompt is blocking the background execution
         subprocess.run(['osascript', '-e', script], check=False, timeout=1.0)
@@ -52,6 +55,25 @@ def execute_mac_applescript(script):
         prompt_mac_permissions()
     except Exception as e:
         print(f"AppleScript Error: {e}", file=sys.stderr)
+
+def press_hotkey(keys):
+    """Universal hotkey support for combinations like ['ctrl', 'alt', 'del'] or ['cmd', 'space']"""
+    try:
+        print(f"Executing hotkey combination: {' + '.join(keys).upper()}")
+        # Map some common keys to platform-specific equivalents if needed
+        mapped_keys = []
+        for k in keys:
+            k_lower = k.lower()
+            if k_lower in ['cmd', 'command', 'windows', 'super']:
+                mapped_keys.append('command' if platform.system() == 'Darwin' else 'win')
+            elif k_lower == 'ctrl':
+                mapped_keys.append('ctrl')
+            else:
+                mapped_keys.append(k_lower)
+        
+        pyautogui.hotkey(*mapped_keys)
+    except Exception as e:
+        print(f"Hotkey Error: {e}", file=sys.stderr)
 
 def input_thread():
     for line in sys.stdin:
@@ -70,13 +92,22 @@ def main():
     local_ip = get_local_ip()
     ws_url = f"ws://{local_ip}:3001"
     web_app_url = f"https://hand-tracking-orpin.vercel.app/?ws={ws_url}"
+    os_name = platform.system()
+    
+    # Get current working directory and file path
+    current_file = os.path.abspath(__file__)
+    current_dir = os.path.dirname(current_file)
     
     print("="*60)
     print("   HAND TRACKING CURSOR - SERVER STARTED")
     print("="*60)
+    print(f"   💻 Sistema: {os_name}")
+    print(f"   📂 Ruta: {current_file}")
     print(f"   1. Local IP: {local_ip}")
     print(f"   2. WebSocket: {ws_url}")
-    print("\n   🚀 CONFIGURACIÓN AUTOMÁTICA (Copia y abre en tu móvil):")
+    print("\n   🚀 COMANDO PARA INICIAR (Copia esto):")
+    print(f"   cd \"{current_dir}\" && python3 mouse_controller.py")
+    print("\n   📱 ACCESO AUTOMÁTICO (Abre en tu móvil):")
     print(f"   {web_app_url}")
     print("="*60)
     print("Running... (Press Ctrl+C to stop)")
@@ -123,64 +154,41 @@ def main():
                             pyautogui.scroll(int(delta))
                     elif action == "volume":
                         direction = command.get("direction", "up")
-                        if direction == "up":
-                            execute_mac_applescript('set volume output volume (output volume of (get volume settings) + 5)')
-                        elif direction == "down":
-                            execute_mac_applescript('set volume output volume (output volume of (get volume settings) - 5)')
-                        elif direction == "mute":
-                            execute_mac_applescript('set volume with output muted')
+                        if platform.system() == 'Darwin':
+                            if direction == "up":
+                                execute_mac_applescript('set volume output volume (output volume of (get volume settings) + 5)')
+                            elif direction == "down":
+                                execute_mac_applescript('set volume output volume (output volume of (get volume settings) - 5)')
+                        else:
+                            pyautogui.press('volumeup' if direction == "up" else 'volumedown')
                     elif action == "brightness":
                         direction = command.get("direction", "up")
-                        if direction == "up":
-                            execute_mac_applescript('tell application "System Events" to key code 144') 
-                        elif direction == "down":
-                             execute_mac_applescript('tell application "System Events" to key code 145')
+                        if platform.system() == 'Darwin':
+                            execute_mac_applescript(f'tell application "System Events" to key code {"144" if direction == "up" else "145"}')
                     elif action == "key":
                         key = command.get("key")
                         if key:
                             key_lower = key.lower()
-                            print(f"Executing Mac F-Key hardware map: {key.upper()}")
-                            
-                            if key_lower == "f1":
-                                execute_mac_applescript('tell application "System Events" to key code 145') # Brightness down
-                            elif key_lower == "f2":
-                                execute_mac_applescript('tell application "System SignIn" to key code 144') # Brightness up - generic
-                                execute_mac_applescript('tell application "System Events" to key code 144')
-                            elif key_lower == "f3":
-                                # Mission Control
-                                execute_mac_applescript('tell application "System Events" to key code 160')
-                            elif key_lower == "f4":
-                                # Launchpad
-                                execute_mac_applescript('tell application "System Events" to key code 131')
-                            elif key_lower == "f7":
-                                keyboard.press(Key.media_previous)
-                                keyboard.release(Key.media_previous)
-                            elif key_lower == "f8":
-                                keyboard.press(Key.media_play_pause)
-                                keyboard.release(Key.media_play_pause)
-                            elif key_lower == "f9":
-                                keyboard.press(Key.media_next)
-                                keyboard.release(Key.media_next)
-                            elif key_lower == "f10":
-                                keyboard.press(Key.media_volume_mute)
-                                keyboard.release(Key.media_volume_mute)
-                            elif key_lower == "f11":
-                                keyboard.press(Key.media_volume_down)
-                                keyboard.release(Key.media_volume_down)
-                            elif key_lower == "f12":
-                                keyboard.press(Key.media_volume_up)
-                                keyboard.release(Key.media_volume_up)
-                            elif key_lower in ["f5", "f6"]:
-                                # Generic fallback
-                                keyboard.press(key)
-                                keyboard.release(key)
+                            print(f"Executing Key/F-Key: {key.upper()}")
+                            if platform.system() == 'Darwin':
+                                # Hardware-feel mapping for Mac
+                                if key_lower == "f1": execute_mac_applescript('tell application "System Events" to key code 145')
+                                elif key_lower == "f2": execute_mac_applescript('tell application "System Events" to key code 144')
+                                elif key_lower == "f3": execute_mac_applescript('tell application "System Events" to key code 160')
+                                elif key_lower == "f4": execute_mac_applescript('tell application "System Events" to key code 131')
+                                elif key_lower == "f10": pyautogui.press('volumemute')
+                                elif key_lower == "f11": pyautogui.press('volumedown')
+                                elif key_lower == "f12": pyautogui.press('volumeup')
+                                else: pyautogui.press(key_lower)
                             else:
-                                keyboard.press(key)
-                                keyboard.release(key)
+                                if key_lower == "f10": pyautogui.press('volumemute')
+                                elif key_lower == "f11": pyautogui.press('volumedown')
+                                elif key_lower == "f12": pyautogui.press('volumeup')
+                                else: pyautogui.press(key_lower)
                     elif action == "hotkey":
                         keys = command.get("keys", [])
                         if keys:
-                            pyautogui.hotkey(*keys)
+                            press_hotkey(keys)
                 except Exception as e:
                     print(f"Error handling action: {e}", file=sys.stderr)
             

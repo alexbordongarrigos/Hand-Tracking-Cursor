@@ -14,7 +14,7 @@ const PINCH_THRESHOLD = 0.04;
 // Scale factor to map a smaller central area of the camera to the full screen
 const DEFAULT_SCALE_FACTOR = 1.5;
 
-type GestureAction = 'none' | 'click_left' | 'click_right' | 'drag' | 'scroll' | 'volume_up' | 'volume_down' | 'brightness_up' | 'brightness_down' | 'key_space' | 'key_enter' | 'key_f1' | 'key_f2' | 'key_f3' | 'key_f4' | 'key_f5' | 'key_f6' | 'key_f7' | 'key_f8' | 'key_f9' | 'key_f10' | 'key_f11' | 'key_f12';
+type GestureAction = 'none' | 'click_left' | 'click_right' | 'drag' | 'scroll' | 'volume_up' | 'volume_down' | 'brightness_up' | 'brightness_down' | 'key_space' | 'key_enter' | 'key_escape' | 'key_backspace' | 'key_tab' | 'hotkey_copy' | 'hotkey_paste' | 'hotkey_undo' | 'key_f1' | 'key_f2' | 'key_f3' | 'key_f4' | 'key_f5' | 'key_f6' | 'key_f7' | 'key_f8' | 'key_f9' | 'key_f10' | 'key_f11' | 'key_f12';
 const GESTURE_OPTIONS: { value: GestureAction; label: string }[] = [
   { value: 'none', label: 'Ninguna' },
   { value: 'click_left', label: 'Click Izquierdo' },
@@ -27,6 +27,12 @@ const GESTURE_OPTIONS: { value: GestureAction; label: string }[] = [
   { value: 'brightness_down', label: 'Bajar Brillo' },
   { value: 'key_space', label: 'Tecla: Espacio' },
   { value: 'key_enter', label: 'Tecla: Enter' },
+  { value: 'key_escape', label: 'Tecla: Escape' },
+  { value: 'key_backspace', label: 'Tecla: Borrar' },
+  { value: 'key_tab', label: 'Tecla: Tab' },
+  { value: 'hotkey_copy', label: 'Ctrl/Cmd + C' },
+  { value: 'hotkey_paste', label: 'Ctrl/Cmd + V' },
+  { value: 'hotkey_undo', label: 'Ctrl/Cmd + Z' },
   { value: 'key_f1', label: 'Tecla: F1' },
   { value: 'key_f2', label: 'Tecla: F2' },
   { value: 'key_f3', label: 'Tecla: F3' },
@@ -531,6 +537,15 @@ export default function App() {
                   console.log('Sending key gesture:', keyName);
                   ws.send(JSON.stringify({ type: 'key', key: keyName }));
                 }
+              }
+              else if (action.startsWith('hotkey_')) {
+                const combo = action.replace('hotkey_', '');
+                let keys: string[] = [];
+                if (combo === 'copy') keys = ['cmd', 'c'];
+                if (combo === 'paste') keys = ['cmd', 'v'];
+                if (combo === 'undo') keys = ['cmd', 'z'];
+                
+                if (isOpen) ws.send(JSON.stringify({ type: 'hotkey', keys }));
               }
               
               lastActionTimeRef.current = now;
@@ -1039,9 +1054,9 @@ export default function App() {
               <div className="flex gap-4">
                 <div className="flex-none w-8 h-8 rounded-full bg-blue-500/20 border border-blue-500/50 flex items-center justify-center text-blue-400 font-bold">1</div>
                 <div>
-                  <h3 className="text-white font-semibold mb-1 text-base leading-tight">Inicia el Servidor en tu Mac</h3>
-                  <p className="text-slate-400 text-sm mb-2">Corre el script y escanea el QR o link de la terminal.</p>
-                  <code className="block p-2 bg-black/50 rounded-lg text-xs text-blue-300 border border-white/5 whitespace-pre-wrap">python3 mouse_controller.py</code>
+                  <h3 className="text-white font-semibold mb-1 text-base leading-tight">Inicia el Servidor</h3>
+                  <p className="text-slate-400 text-sm mb-2">Copia y pega este comando en tu terminal para entrar en la carpeta correcta y ejecutar el script:</p>
+                  <code className="block p-2 bg-black/50 rounded-lg text-[10px] text-blue-300 border border-white/5 whitespace-pre-wrap font-mono">cd ~/Downloads/hand-tracking-cursor && python3 mouse_controller.py</code>
                 </div>
               </div>
 

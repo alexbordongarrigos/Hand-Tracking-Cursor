@@ -89,6 +89,7 @@ export default function App() {
   });
   
   const [isPipActive, setIsPipActive] = useState(false);
+  const [wsStatus, setWsStatus] = useState<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected');
   const wakeLockRef = useRef<any>(null);
 
   // Auto-connect if URL parameter changes or is present
@@ -139,14 +140,24 @@ export default function App() {
     const connectWS = () => {
       try {
         const ws = new WebSocket(wsUrl);
-        ws.onopen = () => console.log('WebSocket connected to', wsUrl);
+        setWsStatus('connecting');
+        ws.onopen = () => {
+          console.log('WebSocket connected to', wsUrl);
+          setWsStatus('connected');
+        };
         ws.onclose = () => {
           console.log('WebSocket disconnected, reconnecting...');
+          setWsStatus('disconnected');
           reconnectTimeout = setTimeout(connectWS, 3000);
+        };
+        ws.onerror = (err) => {
+          console.error('WebSocket error:', err);
+          setWsStatus('error');
         };
         wsRef.current = ws;
       } catch (e) {
         console.error('Invalid WebSocket URL', e);
+        setWsStatus('error');
       }
     };
     connectWS();
@@ -1034,6 +1045,20 @@ export default function App() {
       {showOnboarding && (
         <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-black/90 backdrop-blur-md animate-in fade-in duration-300 pointer-events-auto">
           <div className="bg-slate-900 border border-slate-700/50 rounded-3xl p-8 max-w-lg w-full shadow-2xl overflow-y-auto max-h-[90vh] ring-1 ring-white/10">
+            {/* Status bar */}
+            <div className="flex items-center gap-2 mb-4">
+              <div className={`w-3 h-3 rounded-full ${
+                wsStatus === 'connected' ? 'bg-emerald-500 shadow-[0_0_10px_#10b981]' : 
+                wsStatus === 'connecting' ? 'bg-amber-500 animate-pulse' : 
+                'bg-rose-500'
+              }`} />
+              <span className="text-xs font-medium text-slate-300 uppercase tracking-widest">
+                {wsStatus === 'connected' ? 'Conectado a PC' : 
+                 wsStatus === 'connecting' ? 'Buscando PC...' : 
+                 wsStatus === 'error' ? 'Error de Conexión' : 'Desconectado'}
+              </span>
+            </div>
+
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-2xl font-bold text-white flex items-center gap-3">
                 <div className="p-2 bg-blue-500 rounded-lg">
@@ -1087,6 +1112,15 @@ export default function App() {
                   </div>
                 </div>
               </div>
+
+              {wsStatus === 'error' && window.location.protocol === 'https:' && (
+                <div className="p-4 bg-rose-500/10 border border-rose-500/20 rounded-2xl">
+                  <p className="text-[10px] text-rose-300 leading-relaxed uppercase tracking-wider">
+                    <b className="text-rose-400">⚠️ Bloqueo de Seguridad:</b> Tu navegador bloquea la conexión desde HTTPS a un servidor local. 
+                    <b> Abre el link de la terminal que empieza por HTTP (no HTTPS)</b> o usa un navegador que permita "Contenido no seguro".
+                  </p>
+                </div>
+              )}
 
               <div className="p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-2xl flex items-start gap-3">
                 <Info className="w-5 h-5 text-emerald-400 flex-none mt-0.5" />

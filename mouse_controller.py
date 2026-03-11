@@ -74,28 +74,32 @@ def press_hotkey(keys):
         print(f"Hotkey Error: {e}", file=sys.stderr)
 
 async def ws_handler(websocket):
-    print(f"New connection from {websocket.remote_address}")
+    print(f"✅ ¡Conexión establecida desde {websocket.remote_address}!")
     try:
         async for message in websocket:
             try:
                 command = json.loads(message)
+                if command.get("type") != "move":
+                    print(f"📩 Comando recibido: {command.get('type')}")
                 command_queue.put(command)
             except json.JSONDecodeError:
                 pass
     except websockets.exceptions.ConnectionClosed:
-        print(f"Connection closed for {websocket.remote_address}")
+        print(f"❌ Conexión cerrada para {websocket.remote_address}")
 
 def worker_thread():
     """Processes commands from the queue in a separate thread to avoid blocking the async loop"""
+    print("🧵 Hilo de ejecución de comandos (Worker) iniciado.")
+    last_move_time = 0
     while True:
         try:
             # Process all pending commands
             latest_move = None
             actions_to_run = []
             
-            # Wait for at least one command if queue is empty
+            # Use small wait to not peg CPU
             if command_queue.empty():
-                time.sleep(0.01)
+                time.sleep(0.005)
                 continue
 
             while not command_queue.empty():
@@ -114,10 +118,12 @@ def worker_thread():
                     if action == "click":
                         btn_str = command.get("button", "left")
                         btn = Button.right if btn_str == "right" else Button.left
+                        print(f"🖱️  Click {btn_str}")
                         mouse.click(btn)
                     elif action == "mouse_down":
                         btn_str = command.get("button", "left")
                         btn = Button.right if btn_str == "right" else Button.left
+                        print(f"🖱️  Manteniendo {btn_str}")
                         mouse.press(btn)
                     elif action == "mouse_up":
                         btn_str = command.get("button", "left")
@@ -129,6 +135,7 @@ def worker_thread():
                             pyautogui.scroll(int(delta))
                     elif action == "volume":
                         direction = command.get("direction", "up")
+                        print(f"🔊 Volumen {direction}")
                         if platform.system() == 'Darwin':
                             if direction == "up":
                                 execute_mac_applescript('set volume output volume (output volume of (get volume settings) + 5)')
@@ -138,13 +145,14 @@ def worker_thread():
                             pyautogui.press('volumeup' if direction == "up" else 'volumedown')
                     elif action == "brightness":
                         direction = command.get("direction", "up")
+                        print(f"🔆 Brillo {direction}")
                         if platform.system() == 'Darwin':
                             execute_mac_applescript(f'tell application "System Events" to key code {"144" if direction == "up" else "145"}')
                     elif action == "key":
                         key = command.get("key")
                         if key:
                             key_lower = key.lower()
-                            print(f"Executing Key: {key.upper()}")
+                            print(f"⌨️  Tecla: {key.upper()}")
                             if platform.system() == 'Darwin':
                                 if key_lower == "f1": execute_mac_applescript('tell application "System Events" to key code 145')
                                 elif key_lower == "f2": execute_mac_applescript('tell application "System Events" to key code 144')
@@ -172,12 +180,17 @@ def worker_thread():
                     if nx is not None and ny is not None:
                         screen_w, screen_h = pyautogui.size()
                         pyautogui.moveTo(nx * screen_w, ny * screen_h)
+                        # Periodic movement log to avoid spamming
+                        now = time.time()
+                        if now - last_move_time > 2:
+                            print(f"📍 Moviendo cursor: Posición {nx:.2f}, {ny:.2f}")
+                            last_move_time = now
                 except Exception as e:
                     print(f"Move error: {e}", file=sys.stderr)
         except Exception as e:
             print(f"Worker thread error: {e}", file=sys.stderr)
         
-        time.sleep(0.01)
+        time.sleep(0.005)
 
 async def main_async():
     local_ip = get_local_ip()

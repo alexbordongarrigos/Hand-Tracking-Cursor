@@ -112,6 +112,8 @@ export default function App() {
   const isRightClickRef = useRef(false);
   const yOffsetRef = useRef(0);
   const wsRef = useRef<WebSocket | null>(null);
+  const workerRef = useRef<Worker | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const colorModeRef = useRef(colorMode);
   const colorCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -262,6 +264,7 @@ export default function App() {
           videoRef.current.onloadedmetadata = () => {
             videoRef.current?.play();
             setIsReady(true);
+            // Trigger audio on first user interaction or here if allowed
             startDetection();
           };
         }
@@ -286,8 +289,42 @@ export default function App() {
     };
     requestWakeLock();
 
+    // Background Audio Metronome Trick
+    const setupBackgroundAudio = () => {
+      const audio = new Audio();
+      // 1 second of base64 silence
+      audio.src = "data:audio/wav;base64,UklGRigAAABXQVZFRm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAAgA";
+      audio.loop = true;
+      audioRef.current = audio;
+    };
+    setupBackgroundAudio();
+
+    // Web Worker Metronome (Doesn't get throttled as much as the main thread)
+    const workerCode = `
+      let timer = null;
+      self.onmessage = function(e) {
+        if (e.data === 'start') {
+          if (timer) clearInterval(timer);
+          timer = setInterval(() => self.postMessage('tick'), 33);
+        } else if (e.data === 'stop') {
+          clearInterval(timer);
+          timer = null;
+        }
+      };
+    `;
+    const blob = new Blob([workerCode], { type: 'application/javascript' });
+    const worker = new Worker(URL.createObjectURL(blob));
+    workerRef.current = worker;
+
     return () => {
       active = false;
+      if (workerRef.current) {
+        workerRef.current.postMessage('stop');
+        workerRef.current.terminate();
+      }
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
       if (requestRef.current) clearTimeout(requestRef.current);
       if (handLandmarkerRef.current) handLandmarkerRef.current.close();
       if (videoRef.current && videoRef.current.srcObject) {
@@ -587,8 +624,13 @@ export default function App() {
           }
         }
       }
-      // Use setTimeout instead of requestAnimationFrame so it keeps running in the background
-      requestRef.current = setTimeout(detect, 1000 / 30) as unknown as number;
+      // Use Web Worker metronome for robust background execution
+      if (workerRef.current) {
+        workerRef.current.onmessage = (e) => {
+          if (e.data === 'tick') detect();
+        };
+        workerRef.current.postMessage('start');
+      }
     };
 
     detect();
@@ -698,6 +740,19 @@ export default function App() {
               title="Guía de Configuración"
             >
               <Target className="w-5 h-5" />
+            </button>
+            <button 
+              onClick={() => {
+                if (audioRef.current) {
+                  audioRef.current.play().then(() => {
+                    console.log('Background Audio playing');
+                  }).catch(e => console.error('Audio play error:', e));
+                }
+              }}
+              className="p-3 rounded-xl border bg-slate-800/80 border-slate-700/50 text-slate-400 hover:bg-emerald-500/20 hover:text-emerald-300 transition-colors"
+              title="Activar Modo Segundo Plano (Audio)"
+            >
+              <Info className="w-5 h-5" />
             </button>
             <button 
               onClick={() => setShowDebug(!showDebug)}

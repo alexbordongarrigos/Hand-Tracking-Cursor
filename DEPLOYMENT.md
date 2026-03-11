@@ -1,14 +1,16 @@
-# Instrucciones de Despliegue y Uso Remoto
+# Instrucciones de Despliegue (Vercel)
 
-## 1. Despliegue en GitHub Pages (Frontend)
+## 1. Despliegue en la Nube
 
-El repositorio incluye un archivo de *GitHub Actions* configurado para desplegar automáticamente la web cada vez que subes cambios a la rama `main`.
+He configurado el proyecto para ser desplegado en **Vercel**, lo que te permite tener un enlace gratuito y "limpio" (sin tu nombre de usuario).
 
-Para que el enlace funcione en GitHub:
-1. Ve a tu repositorio en GitHub: **alexbordongarrigos/Hand-Tracking-Cursor**
-2. Entra en **Settings** > **Pages**
-3. En la sección *Source*, selecciona **GitHub Actions**.
-4. ¡Listo! Espera unos minutos y tu página web estará viva en: `https://alexbordongarrigos.github.io/Hand-Tracking-Cursor/`
+1. Entra en [Vercel.com](https://vercel.com) e inicia sesión con tu cuenta de GitHub.
+2. Haz clic en **"Add New"** > **"Project"**.
+3. Importa el repositorio `Hand-Tracking-Cursor`.
+4. En **Project Name**, elige un nombre (ej: `starseed-cursor-hand`).
+5. Haz clic en **Deploy**.
+
+¡Listo! Tu web estará viva en `el-nombre-que-elegiste.vercel.app`. Cada vez que hagas `git push`, la web se actualizará sola.
 
 *Nota: Asegúrate de darle permisos a tu cámara cuando visites la página.*
 

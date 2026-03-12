@@ -92,6 +92,10 @@ export default function App() {
     // 2. Fallback to localStorage
     return localStorage.getItem('wsUrl') || 'ws://localhost:3001';
   });
+
+  const [antiMistouch, setAntiMistouch] = useState(() => {
+    return localStorage.getItem('antiMistouchEnabled') !== 'false'; // Predeterminado true
+  });
   
   const [isPipActive, setIsPipActive] = useState(false);
   const [wsStatus, setWsStatus] = useState<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected');
@@ -139,6 +143,8 @@ export default function App() {
   const activeGesturesRef = useRef<Record<string, boolean>>({
     index: false, middle: false, ring: false, pinky: false
   });
+  const antiMistouchRef = useRef(antiMistouch);
+  const isHandExtremeAngleRef = useRef(false);
   const isDraggingRef = useRef(false);
   const isScrollingRef = useRef(false);
   const scrollStartYRef = useRef(0);
@@ -220,6 +226,10 @@ export default function App() {
   useEffect(() => { angleControlRef.current = angleControlEnabled; }, [angleControlEnabled]);
   useEffect(() => { angleSensitivityRef.current = angleSensitivity; }, [angleSensitivity]);
   useEffect(() => { activationThresholdRef.current = activationThreshold; }, [activationThreshold]);
+  useEffect(() => { 
+    antiMistouchRef.current = antiMistouch; 
+    localStorage.setItem('antiMistouchEnabled', antiMistouch.toString());
+  }, [antiMistouch]);
 
   useEffect(() => {
     // Create a hidden canvas for color sampling
@@ -554,22 +564,36 @@ export default function App() {
             }
           }
 
+          // --- Anti-Mistouch Protection ---
+          let isHandFacingOut = false;
+          if (antiMistouchRef.current) {
+            // Umbrales donde la mano apunta fuera de un ángulo de interacción útil
+            // Pitch > 0.40 suele ser mano muy acostada o apuntando al techo
+            // Yaw > 0.45 es mano de perfil extremo
+            const isPitchExtreme = Math.abs(rotationGimbalRef.current.pitch) > 0.40;
+            const isYawExtreme = Math.abs(rotationGimbalRef.current.yaw) > 0.45;
+            isHandFacingOut = isPitchExtreme || isYawExtreme;
+          }
+          isHandExtremeAngleRef.current = isHandFacingOut;
+
           // Hysteresis: to start a gesture, palm must face and distance < PINCH_THRESHOLD
-          // To maintain, distance < PINCH_THRESHOLD * 1.5 (palm facing ignored so turning hand doesn't drop holds)
+          // If Anti-Mistouch is active and hand is facing out, we block starting ANY gesture
+          const canStartGesture = !isHandFacingOut && isPalmFacing;
+
           const maintainThreshold = PINCH_THRESHOLD * 1.5;
           const currentStates = {
             index: activeGesturesRef.current.index 
               ? calculateDistance(thumbTip, indexTip) < maintainThreshold
-              : isPalmFacing && calculateDistance(thumbTip, indexTip) < PINCH_THRESHOLD,
+              : canStartGesture && calculateDistance(thumbTip, indexTip) < PINCH_THRESHOLD,
             middle: activeGesturesRef.current.middle 
               ? calculateDistance(thumbTip, middleTip) < maintainThreshold
-              : isPalmFacing && calculateDistance(thumbTip, middleTip) < PINCH_THRESHOLD,
+              : canStartGesture && calculateDistance(thumbTip, middleTip) < PINCH_THRESHOLD,
             ring: activeGesturesRef.current.ring 
               ? calculateDistance(thumbTip, ringTip) < maintainThreshold
-              : isPalmFacing && calculateDistance(thumbTip, ringTip) < PINCH_THRESHOLD,
+              : canStartGesture && calculateDistance(thumbTip, ringTip) < PINCH_THRESHOLD,
             pinky: activeGesturesRef.current.pinky 
               ? calculateDistance(thumbTip, pinkyTip) < maintainThreshold
-              : isPalmFacing && calculateDistance(thumbTip, pinkyTip) < PINCH_THRESHOLD
+              : canStartGesture && calculateDistance(thumbTip, pinkyTip) < PINCH_THRESHOLD
           };
 
           const handleAction = (finger: string, isActive: boolean, wasActive: boolean) => {
@@ -1170,6 +1194,20 @@ export default function App() {
 
               {/* Gestures */}
               <div>
+                <div className="flex items-center justify-between p-4 rounded-2xl mb-6" style={{ background: 'rgba(244,63,94,0.05)', border: '1px solid rgba(244,63,94,0.1)' }}>
+                  <div className="flex-1 pr-4">
+                    <span className="text-[10px] uppercase tracking-[0.2em] font-bold text-rose-400 block mb-1">Protección Anti-Mistouch</span>
+                    <p className="text-[9px] text-slate-500 leading-relaxed italic">Bloquea gestos automáticamente si la mano no apunta a la pantalla para evitar clics accidentales.</p>
+                  </div>
+                  <button 
+                    onClick={() => setAntiMistouch(!antiMistouch)}
+                    className={`w-12 h-6 rounded-full transition-all relative flex items-center px-1 ${antiMistouch ? 'bg-rose-500/30' : 'bg-slate-800'}`}
+                    style={{ border: `1px solid ${antiMistouch ? 'rgba(244,63,94,0.4)' : 'rgba(255,255,255,0.1)'}` }}
+                  >
+                    <div className={`w-4 h-4 rounded-full shadow-lg transform transition-all duration-300 ${antiMistouch ? 'translate-x-6 bg-rose-400' : 'translate-x-0 bg-slate-500'}`} />
+                  </button>
+                </div>
+
                 <div className="flex items-center gap-2 mb-4">
                   <div className="h-px flex-1" style={{ background: 'linear-gradient(to right, rgba(0,245,212,0.4), transparent)' }} />
                   <span className="text-[10px] uppercase tracking-[0.25em] text-neon font-semibold">Gestos Personalizados</span>
@@ -1341,6 +1379,13 @@ export default function App() {
                 <span className={`text-[9px] font-bold uppercase tracking-widest px-2 py-1 rounded-full transition-opacity duration-100 ${isClicking ? 'opacity-100' : 'opacity-0'}`}
                   style={{ background: `${clickColor}22`, color: clickColor, border: `1px solid ${clickColor}44` }}>
                   {isLeftClick ? '← Left Click' : isRightClick ? 'Right Click →' : ''}
+                </span>
+              </div>
+
+              {/* Anti-Mistouch Block Indicator */}
+              <div className="absolute bottom-full mb-3 left-0 whitespace-nowrap" style={{ transform: `rotate(${-rotation}deg)` }}>
+                <span className={`text-[9px] font-bold uppercase tracking-widest px-2 py-1 rounded-full bg-rose-500/20 text-rose-400 border border-rose-500/40 transition-opacity duration-300 ${isHandExtremeAngleRef.current ? 'opacity-100' : 'opacity-0'}`}>
+                  ⚠ Ángulo Bloqueado
                 </span>
               </div>
             </div>

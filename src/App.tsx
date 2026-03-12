@@ -65,10 +65,11 @@ export default function App() {
   const [cursorStyle, setCursorStyle] = useState<'classic' | 'dot' | 'crosshair' | 'ring'>('classic');
   const [colorMode, setColorMode] = useState<'custom' | 'dynamic'>('custom');
   const [cursorColor, setCursorColor] = useState('#3b82f6');
-  const [enableRotation, setEnableRotation] = useState(true);
-  const [angleOffset, setAngleOffset] = useState(0);
-  const [sensitivityX, setSensitivityX] = useState(DEFAULT_SCALE_FACTOR);
-  const [sensitivityY, setSensitivityY] = useState(DEFAULT_SCALE_FACTOR);
+  // Sensibilidad Dual
+  const [posSensitivityX, setPosSensitivityX] = useState(DEFAULT_SCALE_FACTOR);
+  const [posSensitivityY, setPosSensitivityY] = useState(DEFAULT_SCALE_FACTOR);
+  const [rotSensitivityX, setRotSensitivityX] = useState(1.0);
+  const [rotSensitivityY, setRotSensitivityY] = useState(1.0);
   const [smoothing, setSmoothing] = useState(DEFAULT_SMOOTHING);
   const [gestureMap, setGestureMap] = useState<Record<string, GestureAction>>({
     index: 'click_left',
@@ -76,6 +77,7 @@ export default function App() {
     ring: 'scroll',
     pinky: 'none'
   });
+  // Se mantienen para retrocompatibilidad pero se esconden o ignoran en la lógica de trabas
   const [angleControlEnabled, setAngleControlEnabled] = useState(false);
   const [angleSensitivity, setAngleSensitivity] = useState(1.5);
   const [activationThreshold, setActivationThreshold] = useState(45);
@@ -111,6 +113,7 @@ export default function App() {
   const lastVideoTimeRef = useRef(-1);
   const smoothedPosRef = useRef({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
   const smoothedNormPosRef = useRef({ x: 0.5, y: 0.5 });
+  const rotationGimbalRef = useRef({ pitch: 0, yaw: 0 }); // Filtro independiente anti-temblor para la rotación 3D
   const smoothedAngleRef = useRef(0);
   const isLeftClickRef = useRef(false);
   const isRightClickRef = useRef(false);
@@ -122,8 +125,10 @@ export default function App() {
   const colorModeRef = useRef(colorMode);
   const colorCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const smoothedRgbRef = useRef({ r: 59, g: 130, b: 246 });
-  const sensitivityXRef = useRef(sensitivityX);
-  const sensitivityYRef = useRef(sensitivityY);
+  const posSensitivityXRef = useRef(posSensitivityX);
+  const posSensitivityYRef = useRef(posSensitivityY);
+  const rotSensitivityXRef = useRef(rotSensitivityX);
+  const rotSensitivityYRef = useRef(rotSensitivityY);
   const smoothingRef = useRef(smoothing);
   const gestureMapRef = useRef(gestureMap);
   const angleControlRef = useRef(angleControlEnabled);
@@ -206,33 +211,15 @@ export default function App() {
     colorModeRef.current = colorMode;
   }, [colorMode]);
 
-  useEffect(() => {
-    sensitivityXRef.current = sensitivityX;
-  }, [sensitivityX]);
-
-  useEffect(() => {
-    sensitivityYRef.current = sensitivityY;
-  }, [sensitivityY]);
-
-  useEffect(() => {
-    gestureMapRef.current = gestureMap;
-  }, [gestureMap]);
-
-  useEffect(() => {
-    smoothingRef.current = smoothing;
-  }, [smoothing]);
-
-  useEffect(() => {
-    angleControlRef.current = angleControlEnabled;
-  }, [angleControlEnabled]);
-
-  useEffect(() => {
-    angleSensitivityRef.current = angleSensitivity;
-  }, [angleSensitivity]);
-
-  useEffect(() => {
-    activationThresholdRef.current = activationThreshold;
-  }, [activationThreshold]);
+  useEffect(() => { posSensitivityXRef.current = posSensitivityX; }, [posSensitivityX]);
+  useEffect(() => { posSensitivityYRef.current = posSensitivityY; }, [posSensitivityY]);
+  useEffect(() => { rotSensitivityXRef.current = rotSensitivityX; }, [rotSensitivityX]);
+  useEffect(() => { rotSensitivityYRef.current = rotSensitivityY; }, [rotSensitivityY]);
+  useEffect(() => { gestureMapRef.current = gestureMap; }, [gestureMap]);
+  useEffect(() => { smoothingRef.current = smoothing; }, [smoothing]);
+  useEffect(() => { angleControlRef.current = angleControlEnabled; }, [angleControlEnabled]);
+  useEffect(() => { angleSensitivityRef.current = angleSensitivity; }, [angleSensitivity]);
+  useEffect(() => { activationThresholdRef.current = activationThreshold; }, [activationThreshold]);
 
   useEffect(() => {
     // Create a hidden canvas for color sampling
@@ -369,8 +356,8 @@ export default function App() {
     }
   };
 
-  const calculateDistance = (p1: { x: number, y: number, z: number }, p2: { x: number, y: number, z: number }) => {
-    return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2) + Math.pow(p1.z - p2.z, 2));
+  const calculateDistance = (p1: { x: number, y: number }, p2: { x: number, y: number }) => {
+    return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
   };
 
   const startDetection = () => {
@@ -448,33 +435,54 @@ export default function App() {
           while (angleDiff > 180) angleDiff -= 360;
           smoothedAngleRef.current = currentAngle + angleDiff * (1 - s);
 
-          if (angleControlRef.current) {
-            // --- LASER POINTER MODE (Rotation based) ---
-            const mcp = landmarks[9];
-            const vx = mcp.x - wrist.x;
-            const vy = mcp.y - wrist.y;
+          // --- SEGUIMIENTO TOTALMENTE FLUIDO (Sin comportamientos de bloqueo/congelamiento) ---
+          
+          // 1. Calcular posición base central mapeada a los límites de pantalla
+          // La cámara está en modo espejo. trackingPoint.x va de 0 (izquierda de la imagen = tu derecha) a 1 (derecha de la imagen = tu izquierda).
+          // Para que moverse físicamente a la derecha mueva el cursor a la derecha de la pantalla (0 a 1), debemos invertir x.
+          const invertedX = 1.0 - trackingPoint.x;
+          let baseNormX = 0.5 + (invertedX - 0.5) * posSensitivityXRef.current;
+          let baseNormY = 0.5 + (trackingPoint.y - 0.5) * posSensitivityYRef.current - yOffsetRef.current;
+
+          // 2. Modelo 3D Físico (worldLandmarks - Inmune a perspectiva y distorsión)
+          if (results.worldLandmarks && results.worldLandmarks.length > 0) {
+            const world = results.worldLandmarks[0];
+            const wrist3D = world[0];
+            const indexMcp3D = world[5];
+            const middleMcp3D = world[9];
+            const pinkyMcp3D = world[17];
             
-            // Activation threshold check (Angle gating)
-            const displacement = Math.sqrt(vx * vx + vy * vy);
-            const pointingAngle = displacement * 180; 
+            // Centro de gravedad superior asumiendo la línea de nudillos
+            const palmTopX = (indexMcp3D.x + pinkyMcp3D.x + middleMcp3D.x) / 3;
+            const palmTopY = (indexMcp3D.y + pinkyMcp3D.y + middleMcp3D.y) / 3;
+
+            // Yaw (Guiñada 3D): Rotación real en el espacio físico
+            // Al rotar la mano hacia la derecha (físicamente), el nudillo va hacia la derecha.
+            // En worldLandmarks (centrado en la lente con espejo invertido), 'X' es negativo a tu derecha.
+            // Para que empuje el cursor a *tu derecha* de la pantalla (positivo), sumamos inversamente:
+            const rawYaw = wrist3D.x - palmTopX;
             
-            if (pointingAngle > activationThresholdRef.current) {
-              // Outside activation zone: Use last smoothed position (freeze/gate)
-              rawNormX = smoothedNormPosRef.current.x;
-              rawNormY = smoothedNormPosRef.current.y;
-            } else {
-              // Project target: Hand Position + (Rotation * Sensitivity)
-              // (1 - mcp.x) mirrors the hand pos
-              // vx is MCP relative to wrist. If vx > 0 (tilted right), we want rawNormX to increase.
-              // But since we use (1 - mcp.x), we subtract (vx * sens)
-              rawNormX = (1 - mcp.x) - (vx * angleSensitivityRef.current);
-              rawNormY = mcp.y + (vy * angleSensitivityRef.current);
-            }
+            // Pitch (Cabeceo 3D): Inclinación real en el espacio físico
+            // POSTURA_RELAJADA_Y compensa que la mano naturalmente tiene un ángulo hacia la cámara en worldLandmarks
+            const POSTURA_RELAJADA_Y = -0.06; // Compensador anatómico (Ajustable si sigue yéndose muy arriba/abajo)
+            const rawPitch = (palmTopY - wrist3D.y) - POSTURA_RELAJADA_Y;
+
+            // --- FILTRO GIMBAL (Suavizado independiente y extremo para eliminar el temblor angular) ---
+            // Un smoothing altísimo asegura que la rotación se sienta como fluida ("cinemática")
+            const gimbalSmoothing = 0.85 + (smoothingRef.current * 0.1); 
+            rotationGimbalRef.current.yaw = (rotationGimbalRef.current.yaw * gimbalSmoothing) + (rawYaw * (1 - gimbalSmoothing));
+            rotationGimbalRef.current.pitch = (rotationGimbalRef.current.pitch * gimbalSmoothing) + (rawPitch * (1 - gimbalSmoothing));
+
+            // Inyección inteligente: Aspect Ratio (Y/X asimétricos)
+            // MAGIC_YAW/MAGIC_PITCH compensan el hecho de que worldLandmarks está en escala de metros
+            const MAGIC_YAW = 18.0;   // Más sensible para cubrir pantallas anchas
+            const MAGIC_PITCH = 12.0; // Menos fuerza al Pitch para no irse rápido a los techos 16:9
+            
+            rawNormX = baseNormX + (rotationGimbalRef.current.yaw * rotSensitivityXRef.current * MAGIC_YAW);
+            rawNormY = baseNormY + (rotationGimbalRef.current.pitch * rotSensitivityYRef.current * MAGIC_PITCH);
           } else {
-            // --- STANDARD MAPPING MODE ---
-            const invertedX = 1.0 - trackingPoint.x;
-            rawNormX = 0.5 + (invertedX - 0.5) * sensitivityXRef.current;
-            rawNormY = 0.5 + (trackingPoint.y - 0.5) * sensitivityYRef.current - yOffsetRef.current;
+            rawNormX = baseNormX;
+            rawNormY = baseNormY;
           }
 
           // Clamp to normalized boundaries
@@ -727,244 +735,462 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-100 overflow-hidden relative font-sans">
-      {/* Hidden Video Element */}
-      <video
-        ref={videoRef}
-        className="hidden"
-        playsInline
-      />
+    <div className="min-h-screen text-slate-100 overflow-hidden relative font-sans"
+      style={{ background: 'radial-gradient(ellipse at 20% 50%, #0a0f1e 0%, #050810 40%, #000308 100%)' }}>
 
-      {/* Main UI */}
-      <div className="absolute inset-0 z-10 flex flex-col pointer-events-none">
-        {/* Header */}
-        <header className="p-6 flex justify-between items-start">
-          <div className="bg-slate-800/80 backdrop-blur-md p-4 rounded-2xl border border-slate-700/50 shadow-xl pointer-events-auto">
-            <h1 className="text-xl font-semibold flex items-center gap-2 mb-2">
-              <MousePointer2 className="w-5 h-5 text-blue-400" />
-              Hand Tracking Cursor
-            </h1>
-            <p className="text-sm text-slate-400 max-w-xs">
-              Mueve tu mano para controlar el cursor. Junta el pulgar y el índice para click izquierdo. Junta el pulgar y el medio para click derecho.
-            </p>
+      {/* Ambient Background Orbs */}
+      <div className="fixed inset-0 pointer-events-none overflow-hidden">
+        <div className="absolute top-[-20%] left-[-10%] w-[600px] h-[600px] rounded-full opacity-10"
+          style={{ background: 'radial-gradient(circle, #00f5d4 0%, transparent 70%)', filter: 'blur(80px)', animation: 'pulse 8s ease-in-out infinite' }} />
+        <div className="absolute bottom-[-20%] right-[-10%] w-[500px] h-[500px] rounded-full opacity-8"
+          style={{ background: 'radial-gradient(circle, #7c3aed 0%, transparent 70%)', filter: 'blur(100px)', animation: 'pulse 10s ease-in-out infinite 2s' }} />
+        <div className="absolute top-[40%] right-[20%] w-[300px] h-[300px] rounded-full opacity-6"
+          style={{ background: 'radial-gradient(circle, #0ea5e9 0%, transparent 70%)', filter: 'blur(60px)', animation: 'pulse 6s ease-in-out infinite 4s' }} />
+      </div>
+
+      {/* CSS Animations */}
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+        * { font-family: 'Inter', sans-serif; }
+        code, input[type="text"].font-mono { font-family: 'JetBrains Mono', monospace; }
+
+        @keyframes pulse {
+          0%, 100% { transform: scale(1); opacity: 0.08; }
+          50% { transform: scale(1.15); opacity: 0.14; }
+        }
+        @keyframes shimmer {
+          0% { background-position: -200% center; }
+          100% { background-position: 200% center; }
+        }
+        @keyframes glow-pulse {
+          0%, 100% { box-shadow: 0 0 15px rgba(0,245,212,0.3), 0 0 30px rgba(0,245,212,0.1); }
+          50% { box-shadow: 0 0 25px rgba(0,245,212,0.5), 0 0 50px rgba(0,245,212,0.2); }
+        }
+        @keyframes scan-line {
+          0% { transform: translateY(-100%); }
+          100% { transform: translateY(100vh); }
+        }
+        @keyframes float {
+          0%, 100% { transform: translateY(0px); }
+          50% { transform: translateY(-6px); }
+        }
+        @keyframes spin-slow {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+        @keyframes fadeInUp {
+          from { opacity: 0; transform: translateY(20px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes ripple {
+          0% { transform: translate(-50%,-50%) scale(0); opacity: 0.8; }
+          100% { transform: translate(-50%,-50%) scale(3); opacity: 0; }
+        }
+
+        .glass-panel {
+          background: rgba(8, 14, 30, 0.75);
+          backdrop-filter: blur(20px);
+          border: 1px solid rgba(0,245,212,0.15);
+          box-shadow: 0 4px 24px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.05);
+        }
+        .glass-panel-strong {
+          background: rgba(5, 10, 22, 0.9);
+          backdrop-filter: blur(30px);
+          border: 1px solid rgba(0,245,212,0.2);
+          box-shadow: 0 8px 40px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.06), 0 0 60px rgba(0,245,212,0.03);
+        }
+        .neon-border {
+          border: 1px solid rgba(0,245,212,0.3);
+          box-shadow: 0 0 10px rgba(0,245,212,0.1), inset 0 0 10px rgba(0,245,212,0.03);
+        }
+        .neon-btn {
+          background: rgba(0,245,212,0.07);
+          border: 1px solid rgba(0,245,212,0.25);
+          color: #00f5d4;
+          transition: all 0.2s ease;
+        }
+        .neon-btn:hover {
+          background: rgba(0,245,212,0.15);
+          box-shadow: 0 0 20px rgba(0,245,212,0.2);
+          color: #fff;
+        }
+        .neon-btn.active {
+          background: rgba(0,245,212,0.2);
+          box-shadow: 0 0 25px rgba(0,245,212,0.3);
+          color: #00f5d4;
+        }
+        .slider-neon::-webkit-slider-thumb {
+          appearance: none; width: 16px; height: 16px;
+          border-radius: 50%; background: #00f5d4;
+          box-shadow: 0 0 10px rgba(0,245,212,0.6);
+          cursor: pointer;
+        }
+        .slider-purple::-webkit-slider-thumb {
+          appearance: none; width: 16px; height: 16px;
+          border-radius: 50%; background: #a855f7;
+          box-shadow: 0 0 10px rgba(168,85,247,0.6);
+          cursor: pointer;
+        }
+        .slider-base {
+          -webkit-appearance: none;
+          width: 100%; height: 4px;
+          border-radius: 4px;
+          background: rgba(255,255,255,0.07);
+          outline: none;
+        }
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(0,245,212,0.3); border-radius: 4px; }
+        .scan-overlay {
+          background: linear-gradient(transparent 0%, rgba(0,245,212,0.02) 50%, transparent 100%);
+          background-size: 100% 4px;
+        }
+        .text-neon { color: #00f5d4; }
+        .text-neon-dim { color: rgba(0,245,212,0.6); }
+        .status-dot-connected { background: #00f5d4; box-shadow: 0 0 8px #00f5d4, 0 0 16px rgba(0,245,212,0.4); }
+        .status-dot-connecting { background: #f59e0b; box-shadow: 0 0 8px #f59e0b; }
+        .status-dot-error { background: #f43f5e; box-shadow: 0 0 8px #f43f5e; }
+        .status-dot-disconnected { background: rgba(255,255,255,0.2); }
+        select option { background: #0a0f1e; color: #e2e8f0; }
+      `}</style>
+
+      {/* Hidden Video Element */}
+      <video ref={videoRef} className="hidden" playsInline />
+      <canvas ref={colorCanvasRef} className="hidden" width={1} height={1} />
+
+      {/* Main UI Layer (Centered Dashboard) */}
+      <div className="absolute inset-0 z-10 flex items-center justify-center pointer-events-none p-4 sm:p-8">
+        
+        {/* HUD Central Dashboard */}
+        <div className="glass-panel-strong rounded-[2rem] p-6 sm:p-8 w-full max-w-5xl flex flex-col gap-6 pointer-events-auto border border-[rgba(0,245,212,0.2)] shadow-[0_0_80px_rgba(0,245,212,0.05)] relative overflow-hidden" 
+             style={{ animation: 'fadeInUp 0.5s ease', backdropFilter: 'blur(40px)' }}>
+
+          {/* Subtle Grid Background for Dashboard */}
+          <div className="absolute inset-0 z-0 pointer-events-none opacity-20" 
+               style={{ backgroundImage: 'radial-gradient(rgba(0,245,212,0.2) 1px, transparent 1px)', backgroundSize: '30px 30px' }} />
+
+          {/* Top Bar: Brand, Status, Actions */}
+          <div className="relative z-10 flex flex-col sm:flex-row items-center justify-between pb-6 border-b border-[rgba(0,245,212,0.1)] gap-4">
             
-            <div className="mt-4 flex flex-col gap-2">
-              <div className="flex items-center gap-2 text-xs">
-                <div className={`w-3 h-3 rounded-full ${isReady ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'}`} />
-                {isReady ? 'Cámara activa y modelo cargado' : 'Inicializando...'}
+            {/* Logo & Info */}
+            <div className="flex items-center gap-4">
+              <div className="w-14 h-14 rounded-2xl flex items-center justify-center flex-shrink-0"
+                style={{ background: 'linear-gradient(135deg, #00f5d4 0%, #0ea5e9 100%)', boxShadow: '0 0 30px rgba(0,245,212,0.3)', animation: 'float 4s ease-in-out infinite' }}>
+                <MousePointer2 className="w-7 h-7 text-black" />
               </div>
-              {error && (
-                <div className="text-xs text-red-400 bg-red-400/10 p-2 rounded border border-red-400/20">
-                  {error}
+              <div className="flex flex-col">
+                <h1 className="text-xl sm:text-2xl font-bold tracking-[0.2em] uppercase text-neon" style={{ textShadow: '0 0 10px rgba(0,245,212,0.3)' }}>Neural Cursor</h1>
+                <p className="text-[10px] text-slate-400 tracking-[0.3em] uppercase mt-1">Advanced Hand Tracking v2.0</p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-6">
+              {/* Status indicators */}
+              <div className="flex flex-col items-end gap-2 pr-6 border-r border-[rgba(255,255,255,0.05)] hidden md:flex">
+                 <div className="flex items-center gap-2">
+                   <div className={`w-2 h-2 rounded-full flex-shrink-0 ${wsStatus === 'connected' ? 'status-dot-connected' : 'status-dot-error'}`} />
+                   <span className="text-[10px] uppercase tracking-[0.15em] font-mono text-slate-400 max-w-[90px] text-right">
+                      {wsStatus === 'connected' ? 'PC SYNC: OK' : 'NO SYNC'}
+                   </span>
+                 </div>
+                 <div className="flex items-center gap-2">
+                   <div className={`w-2 h-2 rounded-full flex-shrink-0 ${isReady ? 'status-dot-connected' : 'status-dot-connecting animate-pulse'}`} />
+                   <span className="text-[10px] uppercase tracking-[0.15em] font-mono font-bold max-w-[90px] text-right" style={{ color: isReady ? '#00f5d4' : '#f59e0b', textShadow: isReady ? '0 0 10px rgba(0,245,212,0.5)' : 'none' }}>
+                      {isReady ? 'AI: ACTIVE' : 'CALIBRATING'}
+                   </span>
+                 </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex gap-3">
+                <button id="btn-settings" onClick={() => setSettingsOpen(true)} className="neon-btn p-3 sm:px-4 sm:py-3 rounded-xl flex items-center gap-2" title="Ajustes del Sistema">
+                  <Settings2 className="w-5 h-5" />
+                  <span className="text-[10px] font-bold uppercase tracking-widest hidden sm:block">Ajustes</span>
+                </button>
+                <button id="btn-guide" onClick={() => setShowOnboarding(true)} className="neon-btn p-3 sm:px-4 sm:py-3 rounded-xl flex items-center gap-2" title="Guía de Instalación">
+                  <Target className="w-5 h-5" />
+                  <span className="text-[10px] font-bold uppercase tracking-widest hidden sm:block">Guía</span>
+                </button>
+                <button id="btn-camera" onClick={() => setShowDebug(!showDebug)} className={`neon-btn p-3 sm:px-4 sm:py-3 rounded-xl flex items-center gap-2 ${showDebug ? 'active' : ''}`} title="Mostrar/Ocultar Cámara">
+                  <Camera className="w-5 h-5" />
+                  <span className="text-[10px] font-bold uppercase tracking-widest hidden sm:block">Cámara</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {error && (
+            <div className="relative z-10 text-[11px] font-mono tracking-wide text-rose-400 bg-rose-500/10 p-4 rounded-xl border border-rose-500/30 flex items-center justify-center shadow-[0_0_20px_rgba(244,63,94,0.1)]">
+              ⚠ SYSTEM ERROR: {error}
+            </div>
+          )}
+
+          {/* Main Dashboard Content Layout */}
+          <div className="relative z-10 grid grid-cols-1 md:grid-cols-[1fr_auto_auto] gap-6 items-stretch min-h-[280px]">
+            
+            {/* Left: Instructions & Controls */}
+            <div className="flex flex-col justify-between glass-panel rounded-2xl p-6 relative overflow-hidden group hover:border-[rgba(0,245,212,0.3)] transition-colors">
+              <div className="absolute top-0 right-0 w-32 h-32 bg-[rgba(0,245,212,0.05)] rounded-bl-full pointer-events-none transition-transform group-hover:scale-110" />
+              <div>
+                <div className="flex items-center gap-2 mb-4">
+                  <div className="w-1 h-4 bg-[#00f5d4] rounded-full shadow-[0_0_8px_#00f5d4]" />
+                  <h3 className="text-xs uppercase tracking-[0.2em] text-[#00f5d4] font-bold">Mapeo Biométrico</h3>
                 </div>
+                <p className="text-sm text-slate-300 leading-relaxed mb-6 font-light">
+                  Extiende tu palma abierta frente a la cámara. El cursor escaneará tu movimiento en 3D para abarcar toda la pantalla con absoluta fluidez.
+                </p>
+                
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="bg-[rgba(0,0,0,0.3)] border border-[rgba(255,255,255,0.05)] rounded-xl p-4 flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-lg bg-[rgba(0,245,212,0.1)] flex items-center justify-center border border-[rgba(0,245,212,0.2)]">
+                      <div className="w-3 h-3 rounded-full bg-[#00f5d4] shadow-[0_0_10px_#00f5d4]" />
+                    </div>
+                    <div>
+                      <span className="block text-[9px] uppercase tracking-widest text-slate-500 mb-0.5">Click Principal</span>
+                      <span className="block text-xs font-bold text-white tracking-wide">Pulgar + Índice</span>
+                    </div>
+                  </div>
+                  
+                  <div className="bg-[rgba(0,0,0,0.3)] border border-[rgba(255,255,255,0.05)] rounded-xl p-4 flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-lg bg-[rgba(245,158,11,0.1)] flex items-center justify-center border border-[rgba(245,158,11,0.2)]">
+                      <div className="w-3 h-3 rounded-full bg-[#f59e0b] shadow-[0_0_10px_#f59e0b]" />
+                    </div>
+                    <div>
+                      <span className="block text-[9px] uppercase tracking-widest text-slate-500 mb-0.5">Click Secundario</span>
+                      <span className="block text-xs font-bold text-white tracking-wide">Pulgar + Medio</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Middle: Y-Offset Vertical Slider */}
+            <div className="w-24 glass-panel rounded-2xl p-4 flex flex-col items-center justify-between">
+               <span className="text-[10px] font-bold text-[#00f5d4] uppercase tracking-widest text-center pt-2 opacity-80">Eje Z <br/><span className="text-[8px] font-normal opacity-70">(Altura)</span></span>
+               <div className="relative h-full w-full flex items-center justify-center my-4">
+                 <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 rounded-full" style={{ background: 'linear-gradient(to bottom, rgba(0,245,212,0.1), rgba(0,245,212,0.6), rgba(0,245,212,0.1))' }} />
+                 <input
+                   type="range" min="-0.5" max="0.5" step="0.01" value={yOffset}
+                   onChange={(e) => setYOffset(parseFloat(e.target.value))}
+                   className="slider-base slider-neon h-full origin-center cursor-pointer relative z-10"
+                   style={{ writingMode: 'vertical-lr', direction: 'rtl', width: '6px', WebkitAppearance: 'slider-vertical' } as any}
+                 />
+               </div>
+               <div className="bg-black/50 border border-[rgba(0,245,212,0.3)] px-3 py-1.5 rounded-lg shadow-[0_0_15px_rgba(0,245,212,0.1)]">
+                 <span className="text-[11px] font-mono font-bold text-[#00f5d4]">
+                   {yOffset > 0 ? '+' : ''}{Math.round(yOffset * 100)}
+                 </span>
+               </div>
+            </div>
+
+            {/* Right: Camera Feed (if active) */}
+            <div className={`transition-all duration-500 origin-left ${showDebug ? 'w-[360px] opacity-100' : 'w-0 opacity-0 overflow-hidden ml-0 md:ml-[-1.5rem]'} glass-panel rounded-2xl p-2 relative flex-shrink-0 flex items-center justify-center bg-black/40`}>
+              {showDebug && (
+                 <div className="relative w-full aspect-video rounded-xl overflow-hidden neon-border shadow-2xl">
+                   <video
+                     ref={(el) => {
+                       if (el && videoRef.current && el.srcObject !== videoRef.current.srcObject) {
+                         el.srcObject = videoRef.current.srcObject;
+                         el.play().catch(() => console.log("Play interrupted"));
+                       }
+                     }}
+                     className="absolute inset-0 w-full h-full object-cover -scale-x-100"
+                     muted playsInline
+                   />
+                   <canvas ref={canvasRef} className="absolute inset-0 w-full h-full object-cover z-10" />
+                   {/* Scan line overlay */}
+                   <div className="absolute inset-0 z-20 pointer-events-none" style={{ background: 'repeating-linear-gradient(0deg, transparent, transparent 3px, rgba(0,245,212,0.02) 3px, rgba(0,245,212,0.02) 4px)' }} />
+                   
+                   <div className="absolute top-3 left-3 z-30 flex items-center gap-2 bg-black/60 backdrop-blur-md px-2 py-1.5 rounded-lg border border-white/10">
+                     <div className="w-2 h-2 rounded-full animate-pulse" style={{ background: '#f43f5e', boxShadow: '0 0 8px #f43f5e' }} />
+                     <span className="text-[9px] uppercase tracking-[0.2em] font-bold text-white">LIVE VISUALS</span>
+                   </div>
+                   <div className="absolute bottom-0 left-0 right-0 z-30 p-3 bg-gradient-to-t from-black/90 via-black/40 to-transparent">
+                     <span className="text-[9px] uppercase tracking-[0.2em] text-[#00f5d4] font-mono font-bold block text-center">Neural Tracking Core 2.0</span>
+                   </div>
+                 </div>
               )}
             </div>
+
           </div>
 
-          <div className="flex gap-2 pointer-events-auto">
-            <button 
-              onClick={() => setSettingsOpen(true)}
-              className="p-3 rounded-xl border bg-slate-800/80 border-slate-700/50 text-slate-400 hover:bg-slate-700 hover:text-white transition-colors"
-              title="Ajustes del Cursor"
-            >
-              <Settings2 className="w-5 h-5" />
-            </button>
-            <button 
-              onClick={() => setShowOnboarding(true)}
-              className="p-3 rounded-xl border bg-slate-800/80 border-slate-700/50 text-slate-400 hover:bg-slate-700 transition-colors"
-              title="Guía de Configuración"
-            >
-              <Target className="w-5 h-5" />
-            </button>
-            <button 
-              onClick={() => {
-                if (audioRef.current) {
-                  audioRef.current.play().then(() => {
-                    console.log('Background Audio playing');
-                  }).catch(e => console.error('Audio play error:', e));
-                }
-              }}
-              className="p-3 rounded-xl border bg-slate-800/80 border-slate-700/50 text-slate-400 hover:bg-emerald-500/20 hover:text-emerald-300 transition-colors"
-              title="Activar Modo Segundo Plano (Audio)"
-            >
-              <Info className="w-5 h-5" />
-            </button>
-            <button 
-              onClick={() => setShowDebug(!showDebug)}
-              className={`p-3 rounded-xl border transition-colors ${showDebug ? 'bg-blue-500/20 border-blue-500/50 text-blue-300' : 'bg-slate-800/80 border-slate-700/50 text-slate-400 hover:bg-slate-700'}`}
-              title="Toggle Debug View"
-            >
-              <Camera className="w-5 h-5" />
-            </button>
-            <button 
-              onClick={togglePiP}
-              className={`p-3 rounded-xl border transition-colors ${isPipActive ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300' : 'bg-slate-800/80 border-slate-700/50 text-slate-400 hover:bg-slate-700'}`}
-              title="Activar Modo Fondo (Picture-in-Picture)"
-            >
-              <Info className="w-5 h-5" />
-            </button>
-          </div>
-        </header>
-
-        {/* Vertical Adjuster */}
-        <div className="absolute left-6 top-1/2 -translate-y-1/2 bg-slate-800/80 backdrop-blur-md p-4 rounded-2xl border border-slate-700/50 shadow-xl pointer-events-auto flex flex-col items-center gap-6 z-20">
-          <span className="text-xs font-medium text-slate-400 uppercase tracking-wider whitespace-nowrap -rotate-90 mb-4">Altura</span>
-          <div className="h-32 flex items-center justify-center">
-            <input
-              type="range"
-              min="-0.5"
-              max="0.5"
-              step="0.01"
-              value={yOffset}
-              onChange={(e) => setYOffset(parseFloat(e.target.value))}
-              className="w-32 h-2 origin-center -rotate-90 appearance-none bg-slate-700 rounded-full outline-none [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:bg-blue-500 [&::-webkit-slider-thumb]:rounded-full cursor-pointer"
-            />
-          </div>
-          <span className="text-xs text-slate-400 font-mono mt-4">
-            {yOffset > 0 ? '+' : ''}{Math.round(yOffset * 100)}
-          </span>
         </div>
-
-        {/* Interactive Test Area */}
-        <main className="flex-1 flex items-center justify-center p-8 pointer-events-auto">
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-6 max-w-4xl w-full">
-            {[1, 2, 3, 4, 5, 6].map((i) => (
-              <button
-                key={i}
-                onClick={() => console.log(`Left clicked button ${i}`)}
-                onContextMenu={(e) => { e.preventDefault(); console.log(`Right clicked button ${i}`); }}
-                className="bg-slate-800 hover:bg-slate-700 border border-slate-700 p-8 rounded-2xl flex flex-col items-center justify-center gap-4 transition-all hover:scale-105 hover:shadow-xl group"
-              >
-                <div className="w-12 h-12 rounded-full bg-slate-700 group-hover:bg-blue-500/20 flex items-center justify-center transition-colors">
-                  <span className="text-xl font-bold text-slate-400 group-hover:text-blue-400">{i}</span>
-                </div>
-                <span className="text-sm font-medium text-slate-300">Interactúa aquí</span>
-              </button>
-            ))}
-          </div>
-        </main>
       </div>
 
-      {/* Debug Canvas (Camera Feed + Landmarks) */}
-      <div className={`absolute bottom-6 right-6 w-64 aspect-video bg-black rounded-2xl overflow-hidden border-2 border-slate-700 shadow-2xl transition-opacity duration-300 ${showDebug ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
-        {/* We draw the video frame manually to the canvas if we want, or just overlay canvas on video.
-            Since video is hidden, let's draw video to canvas in the loop if we want to see it, 
-            but MediaPipe's detectForVideo doesn't automatically draw the video.
-            Let's add a video element specifically for the debug view. */}
-        <video
-          ref={(el) => {
-            if (el && videoRef.current && el.srcObject !== videoRef.current.srcObject) {
-              el.srcObject = videoRef.current.srcObject;
-              el.play().catch(()=>console.log("Play interrupted"));
-            }
-          }}
-          className="absolute inset-0 w-full h-full object-cover -scale-x-100"
-          muted
-          playsInline
-        />
-        <canvas
-          ref={canvasRef}
-          className="absolute inset-0 w-full h-full object-cover z-10"
-        />
-      </div>
-
-      {/* Settings Panel Overlay */}
+      {/* ─────────── SETTINGS PANEL ─────────── */}
       {settingsOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm pointer-events-auto p-4">
-          <div className="bg-slate-800 border border-slate-700 p-6 rounded-2xl shadow-2xl w-full max-w-md max-h-[90vh] overflow-y-auto custom-scrollbar">
-            <div className="flex justify-between items-center mb-6 sticky top-0 bg-slate-800 pb-2 z-10 border-b border-slate-700/50">
-              <h2 className="text-xl font-bold flex items-center gap-2 text-white"><Settings2 className="w-5 h-5"/> Ajustes del Cursor</h2>
-              <button onClick={() => setSettingsOpen(false)} className="p-2 text-slate-400 hover:text-white hover:bg-slate-700 rounded-lg transition-colors"><X className="w-5 h-5"/></button>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-md pointer-events-auto p-4"
+          style={{ animation: 'fadeInUp 0.2s ease' }}>
+          <div className="glass-panel-strong rounded-3xl w-full max-w-md max-h-[90vh] overflow-y-auto custom-scrollbar shadow-2xl">
+
+            {/* Panel Header */}
+            <div className="sticky top-0 rounded-t-3xl flex justify-between items-center p-6 pb-4 z-10"
+              style={{ background: 'rgba(5,10,22,0.95)', borderBottom: '1px solid rgba(0,245,212,0.1)' }}>
+              <h2 className="text-base font-bold flex items-center gap-3 text-white">
+                <div className="w-8 h-8 rounded-xl flex items-center justify-center" style={{ background: 'linear-gradient(135deg, rgba(0,245,212,0.2), rgba(14,165,233,0.2))', border: '1px solid rgba(0,245,212,0.3)' }}>
+                  <Settings2 className="w-4 h-4 text-neon" />
+                </div>
+                Ajustes del Sistema
+              </h2>
+              <button onClick={() => setSettingsOpen(false)}
+                className="p-2 rounded-xl text-slate-400 hover:text-white transition-colors"
+                style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)' }}>
+                <X className="w-4 h-4" />
+              </button>
             </div>
 
-            <div className="space-y-6">
+            <div className="p-6 space-y-7">
+
               {/* Connection */}
               <div>
-                <h3 className="text-sm font-medium text-white mb-3">Conexión Backend</h3>
-                <div className="mb-4">
-                  <label className="block text-xs text-slate-400 mb-2">URL del WebSocket</label>
-                  <input
-                    type="text"
-                    value={wsUrl}
-                    onChange={(e) => handleWsUrlChange(e.target.value)}
-                    placeholder="ws://localhost:3001 o ws://IP:3001"
-                    className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-sm text-white outline-none focus:border-blue-500 transition-colors font-mono"
-                  />
-                  <p className="text-xs text-slate-500 mt-1">
-                    Usa ws://localhost:3001 si usas la web en este mismo dispositivo. 
-                    Si la conectas desde otro (móvil, tablet u otra PC), ingresa la IP local de tu Mac (ej. ws://192.168.1.100:3001).
-                  </p>
+                <div className="flex items-center gap-2 mb-4">
+                  <div className="h-px flex-1" style={{ background: 'linear-gradient(to right, rgba(0,245,212,0.4), transparent)' }} />
+                  <span className="text-[10px] uppercase tracking-[0.25em] text-neon font-semibold">Conexión Backend</span>
+                  <div className="h-px flex-1" style={{ background: 'linear-gradient(to left, rgba(0,245,212,0.4), transparent)' }} />
+                </div>
+                <label className="block text-[10px] uppercase tracking-widest text-slate-500 mb-2">WebSocket URL</label>
+                <input
+                  type="text"
+                  value={wsUrl}
+                  onChange={(e) => handleWsUrlChange(e.target.value)}
+                  placeholder="ws://localhost:3001"
+                  className="w-full rounded-xl px-4 py-3 text-xs text-white outline-none font-mono transition-all"
+                  style={{ background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(0,245,212,0.2)', color: '#00f5d4' }}
+                />
+                <p className="text-[10px] text-slate-600 mt-2 leading-relaxed">
+                  Usa <span className="text-slate-400">ws://localhost:3001</span> en este dispositivo. Para otro dispositivo usa su IP local (ej. <span className="text-slate-400">ws://192.168.1.100:3001</span>).
+                </p>
+              </div>
+
+              {/* Movement */}
+              <div>
+                <div className="flex items-center gap-2 mb-4">
+                  <div className="h-px flex-1" style={{ background: 'linear-gradient(to right, rgba(0,245,212,0.4), transparent)' }} />
+                  <span className="text-[10px] uppercase tracking-[0.25em] text-neon font-semibold">Movimiento 3D Fluido</span>
+                  <div className="h-px flex-1" style={{ background: 'linear-gradient(to left, rgba(0,245,212,0.4), transparent)' }} />
+                </div>
+
+                <div className="space-y-5">
+
+                  {/* PosX */}
+                  <div>
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-[10px] uppercase tracking-widest text-slate-400">Posición X</span>
+                      <span className="text-xs font-mono text-neon">{posSensitivityX.toFixed(1)}×</span>
+                    </div>
+                    <input type="range" min="0.5" max="3.0" step="0.1" value={posSensitivityX}
+                      onChange={e => setPosSensitivityX(parseFloat(e.target.value))}
+                      className="slider-base slider-neon" />
+                  </div>
+
+                  {/* PosY */}
+                  <div>
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-[10px] uppercase tracking-widest text-slate-400">Posición Y</span>
+                      <span className="text-xs font-mono text-neon">{posSensitivityY.toFixed(1)}×</span>
+                    </div>
+                    <input type="range" min="0.5" max="3.0" step="0.1" value={posSensitivityY}
+                      onChange={e => setPosSensitivityY(parseFloat(e.target.value))}
+                      className="slider-base slider-neon" />
+                  </div>
+
+                  {/* RotX */}
+                  <div>
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-[10px] uppercase tracking-widest" style={{ color: 'rgba(168,85,247,0.8)' }}>Rotación Mano X</span>
+                      <span className="text-xs font-mono" style={{ color: '#a855f7' }}>{rotSensitivityX.toFixed(1)}×</span>
+                    </div>
+                    <input type="range" min="0" max="6.0" step="0.2" value={rotSensitivityX}
+                      onChange={e => setRotSensitivityX(parseFloat(e.target.value))}
+                      className="slider-base slider-purple" />
+                  </div>
+
+                  {/* RotY */}
+                  <div>
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-[10px] uppercase tracking-widest" style={{ color: 'rgba(168,85,247,0.8)' }}>Rotación Mano Y</span>
+                      <span className="text-xs font-mono" style={{ color: '#a855f7' }}>{rotSensitivityY.toFixed(1)}×</span>
+                    </div>
+                    <input type="range" min="0" max="6.0" step="0.2" value={rotSensitivityY}
+                      onChange={e => setRotSensitivityY(parseFloat(e.target.value))}
+                      className="slider-base slider-purple" />
+                  </div>
+
+                  {/* Smoothing */}
+                  <div>
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-[10px] uppercase tracking-widest" style={{ color: 'rgba(16,185,129,0.8)' }}>Suavizado Orgánico</span>
+                      <span className="text-xs font-mono" style={{ color: '#10b981' }}>{Math.round(smoothing * 100)}%</span>
+                    </div>
+                    <input type="range" min="0.1" max="0.95" step="0.05" value={smoothing}
+                      onChange={e => setSmoothing(parseFloat(e.target.value))}
+                      className="slider-base"
+                      style={{ '--thumb-color': '#10b981' } as any} />
+                    <style>{`.slider-base.green::-webkit-slider-thumb { background: #10b981; box-shadow: 0 0 10px rgba(16,185,129,0.6); }`}</style>
+                  </div>
                 </div>
               </div>
 
-              {/* Movement & Sensitivity */}
-              <div className="pt-4 border-t border-slate-700/50">
-                <h3 className="text-sm font-medium text-white mb-3">Movimiento</h3>
-                
-                <div className="mb-4">
-                  <div className="flex justify-between text-xs text-slate-400 mb-2">
-                    <span>Sensibilidad X (Horizontal)</span>
-                    <span className="font-mono">{sensitivityX.toFixed(1)}x</span>
-                  </div>
-                  <input type="range" min="0.5" max="3.0" step="0.1" value={sensitivityX} onChange={e => setSensitivityX(parseFloat(e.target.value))} className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:bg-blue-500 [&::-webkit-slider-thumb]:rounded-full" />
+              {/* Appearance */}
+              <div>
+                <div className="flex items-center gap-2 mb-4">
+                  <div className="h-px flex-1" style={{ background: 'linear-gradient(to right, rgba(0,245,212,0.4), transparent)' }} />
+                  <span className="text-[10px] uppercase tracking-[0.25em] text-neon font-semibold">Apariencia del Cursor</span>
+                  <div className="h-px flex-1" style={{ background: 'linear-gradient(to left, rgba(0,245,212,0.4), transparent)' }} />
                 </div>
 
-                <div className="mb-4">
-                  <div className="flex justify-between text-xs text-slate-400 mb-2">
-                    <span>Sensibilidad Y (Vertical)</span>
-                    <span className="font-mono">{sensitivityY.toFixed(1)}x</span>
-                  </div>
-                  <input type="range" min="0.5" max="3.0" step="0.1" value={sensitivityY} onChange={e => setSensitivityY(parseFloat(e.target.value))} className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:bg-blue-500 [&::-webkit-slider-thumb]:rounded-full" />
-                </div>
-
-                <div>
-                  <div className="flex justify-between text-xs text-slate-400 mb-2">
-                    <span>Suavizado (Estabilidad vs Velocidad)</span>
-                    <span className="font-mono">{Math.round(smoothing * 100)}%</span>
-                  </div>
-                  <input type="range" min="0.1" max="0.95" step="0.05" value={smoothing} onChange={e => setSmoothing(parseFloat(e.target.value))} className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:bg-blue-500 [&::-webkit-slider-thumb]:rounded-full" />
-                </div>
-              </div>
-
-              {/* Style */}
-              <div className="pt-4 border-t border-slate-700/50">
-                <h3 className="text-sm font-medium text-white mb-3">Apariencia</h3>
-                <label className="block text-sm font-medium text-slate-400 mb-1">Estilo del Cursor</label>
-                <select value={cursorStyle} onChange={e => setCursorStyle(e.target.value as any)} className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-white outline-none focus:border-blue-500 transition-colors mb-4">
-                  <option value="classic">Clásico (Flecha)</option>
-                  <option value="dot">Punto Minimalista</option>
-                  <option value="crosshair">Mira (Crosshair)</option>
-                  <option value="ring">Anillo (Target)</option>
+                <label className="block text-[10px] uppercase tracking-widest text-slate-500 mb-2">Estilo</label>
+                <select value={cursorStyle} onChange={e => setCursorStyle(e.target.value as any)}
+                  className="w-full rounded-xl px-4 py-3 text-xs text-white outline-none mb-4 transition-all"
+                  style={{ background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(0,245,212,0.2)' }}>
+                  <option value="classic">● Clásico (Flecha)</option>
+                  <option value="dot">◆ Punto Minimalista</option>
+                  <option value="crosshair">✛ Mira (Crosshair)</option>
+                  <option value="ring">◎ Anillo (Target)</option>
                 </select>
 
-                <label className="block text-sm font-medium text-slate-400 mb-1">Color del Cursor</label>
+                <label className="block text-[10px] uppercase tracking-widest text-slate-500 mb-2">Color</label>
                 <div className="flex gap-3">
-                  <select value={colorMode} onChange={e => setColorMode(e.target.value as any)} className="flex-1 bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-white outline-none focus:border-blue-500 transition-colors">
+                  <select value={colorMode} onChange={e => setColorMode(e.target.value as any)}
+                    className="flex-1 rounded-xl px-4 py-3 text-xs text-white outline-none transition-all"
+                    style={{ background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(0,245,212,0.2)' }}>
                     <option value="custom">Color Fijo</option>
                     <option value="dynamic">Dinámico (Camaleón)</option>
                   </select>
                   {colorMode === 'custom' && (
-                    <input type="color" value={cursorColor} onChange={e => setCursorColor(e.target.value)} className="w-12 h-11 rounded-lg cursor-pointer bg-slate-900 border border-slate-700 p-1" />
+                    <input type="color" value={cursorColor} onChange={e => setCursorColor(e.target.value)}
+                      className="w-12 h-12 rounded-xl cursor-pointer p-1"
+                      style={{ background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(0,245,212,0.2)' }} />
                   )}
                 </div>
-                {colorMode === 'dynamic' && <p className="text-xs text-slate-500 mt-1">El color se adapta a lo que la cámara ve detrás de tu mano.</p>}
+                {colorMode === 'dynamic' && (
+                  <p className="text-[10px] text-slate-600 mt-2">El cursor adopta el color del entorno detrás de tu mano.</p>
+                )}
               </div>
 
-              {/* Advanced Gestures */}
-              <div className="pt-4 border-t border-slate-700/50">
-                <h3 className="text-sm font-medium text-white mb-3">Gestos Personalizados</h3>
-                <p className="text-xs text-slate-400 mb-4">Configura qué acción hace cada dedo al juntarse con tu pulgar.</p>
-                
+              {/* Gestures */}
+              <div>
+                <div className="flex items-center gap-2 mb-4">
+                  <div className="h-px flex-1" style={{ background: 'linear-gradient(to right, rgba(0,245,212,0.4), transparent)' }} />
+                  <span className="text-[10px] uppercase tracking-[0.25em] text-neon font-semibold">Gestos Personalizados</span>
+                  <div className="h-px flex-1" style={{ background: 'linear-gradient(to left, rgba(0,245,212,0.4), transparent)' }} />
+                </div>
+                <p className="text-[10px] text-slate-500 mb-4 leading-relaxed">Junta el pulgar con cada dedo para activar la acción asignada.</p>
+
                 <div className="space-y-3">
-                  {['index', 'middle', 'ring', 'pinky'].map((finger, idx) => {
-                    const fingerLabels = ['Índice', 'Medio', 'Anular', 'Meñique'];
+                  {(['index', 'middle', 'ring', 'pinky'] as const).map((finger, idx) => {
+                    const labels = ['Índice', 'Medio', 'Anular', 'Meñique'];
+                    const colors = ['#00f5d4', '#0ea5e9', '#a855f7', '#f59e0b'];
                     return (
-                      <div key={finger} className="flex flex-col gap-1">
-                        <label className="text-xs font-medium text-slate-300">Pulgar + {fingerLabels[idx]}</label>
-                        <select 
-                          value={gestureMap[finger]} 
-                          onChange={e => setGestureMap({...gestureMap, [finger]: e.target.value as GestureAction})} 
-                          className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-sm text-white outline-none focus:border-blue-500 transition-colors"
+                      <div key={finger} className="rounded-xl p-3" style={{ background: 'rgba(0,0,0,0.3)', border: `1px solid ${colors[idx]}22` }}>
+                        <label className="block text-[10px] uppercase tracking-widest mb-2 font-semibold" style={{ color: colors[idx] }}>
+                          ▸ Pulgar + {labels[idx]}
+                        </label>
+                        <select
+                          value={gestureMap[finger]}
+                          onChange={e => setGestureMap({ ...gestureMap, [finger]: e.target.value as GestureAction })}
+                          className="w-full rounded-lg px-3 py-2 text-xs text-white outline-none transition-all"
+                          style={{ background: 'rgba(0,0,0,0.5)', border: `1px solid ${colors[idx]}33` }}
                         >
                           {GESTURE_OPTIONS.map(opt => (
                             <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -976,210 +1202,145 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Custom Click Image */}
-              <div className="pt-4 border-t border-slate-700/50">
-                <h3 className="text-sm font-medium text-white mb-3">Efecto de Click (PNG/GIF)</h3>
-                
-                <input 
-                  type="file" 
-                  accept="image/png, image/gif" 
+              {/* Click Effect Image */}
+              <div>
+                <div className="flex items-center gap-2 mb-4">
+                  <div className="h-px flex-1" style={{ background: 'linear-gradient(to right, rgba(0,245,212,0.4), transparent)' }} />
+                  <span className="text-[10px] uppercase tracking-[0.25em] text-neon font-semibold">Efecto Visual de Click</span>
+                  <div className="h-px flex-1" style={{ background: 'linear-gradient(to left, rgba(0,245,212,0.4), transparent)' }} />
+                </div>
+                <input
+                  type="file"
+                  accept="image/png, image/gif"
                   onChange={handleImageUpload}
-                  className="block w-full text-sm text-slate-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-500/20 file:text-blue-400 hover:file:bg-blue-500/30 mb-3 cursor-pointer"
+                  className="block w-full text-[10px] text-slate-400 file:mr-3 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-[10px] file:font-bold file:uppercase file:tracking-widest file:cursor-pointer mb-3"
+                  style={{ '--file-bg': 'rgba(0,245,212,0.1)', '--file-color': '#00f5d4' } as any}
                 />
-
                 {clickImage && (
-                  <div className="space-y-3 bg-slate-900/50 p-3 rounded-xl border border-slate-700/50">
-                    <p className="text-xs text-slate-400">Haz click en la imagen para establecer el centro del cursor (punto de anclaje):</p>
+                  <div className="space-y-3 p-3 rounded-xl" style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(0,245,212,0.1)' }}>
+                    <p className="text-[10px] text-slate-500">Click en la imagen para fijar el punto de anclaje:</p>
                     <div className="flex justify-center">
-                      <div 
-                        className="relative inline-block border border-slate-600 rounded bg-slate-800 cursor-crosshair overflow-hidden"
-                        onClick={handleHotspotClick}
-                      >
-                        <img src={clickImage} alt="Preview" className="max-w-[200px] max-h-[150px] object-contain pointer-events-none" />
-                        <div 
-                          className="absolute w-4 h-4 border-2 border-red-500 rounded-full shadow-[0_0_0_1px_rgba(255,255,255,0.5)] pointer-events-none -translate-x-1/2 -translate-y-1/2 flex items-center justify-center"
-                          style={{ left: `${clickImageHotspot.x}%`, top: `${clickImageHotspot.y}%` }}
-                        >
-                          <div className="w-1 h-1 bg-red-500 rounded-full"></div>
-                        </div>
+                      <div className="relative inline-block rounded-lg overflow-hidden cursor-crosshair border" style={{ borderColor: 'rgba(0,245,212,0.2)' }} onClick={handleHotspotClick}>
+                        <img src={clickImage} alt="Preview" className="max-w-[180px] max-h-[120px] object-contain pointer-events-none" />
+                        <div className="absolute w-3 h-3 rounded-full pointer-events-none -translate-x-1/2 -translate-y-1/2"
+                          style={{ left: `${clickImageHotspot.x}%`, top: `${clickImageHotspot.y}%`, border: '2px solid #f43f5e', boxShadow: '0 0 6px #f43f5e' }} />
                       </div>
                     </div>
-                    <button 
-                      onClick={() => setClickImage(null)}
-                      className="w-full py-2 text-xs font-medium text-red-400 bg-red-400/10 hover:bg-red-400/20 rounded-lg transition-colors"
-                    >
-                      Quitar imagen
+                    <button onClick={() => setClickImage(null)}
+                      className="w-full py-2 text-[10px] font-bold uppercase tracking-widest text-rose-400 rounded-xl transition-colors"
+                      style={{ background: 'rgba(244,63,94,0.1)', border: '1px solid rgba(244,63,94,0.2)' }}>
+                      ✕ Quitar imagen
                     </button>
                   </div>
                 )}
               </div>
 
-              {/* Angle Control (Advanced) */}
-              <div className="pt-4 border-t border-slate-700/50">
-                <h3 className="text-sm font-medium text-white mb-3 flex items-center gap-2">
-                  <MousePointer2 className="w-4 h-4 text-purple-400" />
-                  Control por Ángulo (Puntero Láser)
-                </h3>
-                
-                <label className="flex items-center gap-3 text-sm font-medium text-slate-300 mb-4 cursor-pointer">
-                  <input 
-                    type="checkbox" 
-                    checked={angleControlEnabled} 
-                    onChange={e => setAngleControlEnabled(e.target.checked)} 
-                    className="w-4 h-4 rounded bg-slate-900 border-slate-700 text-purple-500 focus:ring-purple-500 focus:ring-offset-slate-800" 
-                  />
-                  Activar modo Puntero Láser
-                </label>
-
-                {angleControlEnabled && (
-                  <div className="space-y-4 pl-7 pb-2">
-                    <div>
-                      <div className="flex justify-between text-xs text-slate-400 mb-2">
-                        <span>Sensibilidad de Ángulo</span>
-                        <span className="font-mono">{angleSensitivity.toFixed(1)}x</span>
-                      </div>
-                      <input 
-                        type="range" 
-                        min="0.5" 
-                        max="5.0" 
-                        step="0.1" 
-                        value={angleSensitivity} 
-                        onChange={e => setAngleSensitivity(parseFloat(e.target.value))} 
-                        className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-purple-500" 
-                      />
-                      <p className="text-[10px] text-slate-500 mt-1">Multiplica la rotación de la mano para cubrir toda la pantalla.</p>
-                    </div>
-
-                    <div>
-                      <div className="flex justify-between text-xs text-slate-400 mb-2">
-                        <span>Umbral de Activación</span>
-                        <span className="font-mono">{activationThreshold}°</span>
-                      </div>
-                      <input 
-                        type="range" 
-                        min="10" 
-                        max="90" 
-                        step="5" 
-                        value={activationThreshold} 
-                        onChange={e => setActivationThreshold(parseInt(e.target.value))} 
-                        className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-purple-500" 
-                      />
-                      <p className="text-[10px] text-slate-500 mt-1">Si la mano apunta más allá de este ángulo, el seguimiento se detiene.</p>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Rotation */}
-              <div className="pt-4 border-t border-slate-700/50">
-                <label className="flex items-center gap-3 text-sm font-medium text-white mb-3 cursor-pointer">
-                  <input type="checkbox" checked={enableRotation} onChange={e => setEnableRotation(e.target.checked)} className="w-4 h-4 rounded bg-slate-900 border-slate-700 text-blue-500 focus:ring-blue-500 focus:ring-offset-slate-800" />
-                  Rotar con el ángulo de la mano
-                </label>
-                {enableRotation && (
-                  <div className="pl-7">
-                    <div className="flex justify-between text-xs text-slate-400 mb-2">
-                      <span>Ajuste de Ángulo</span>
-                      <span className="font-mono">{angleOffset}°</span>
-                    </div>
-                    <input type="range" min="-180" max="180" value={angleOffset} onChange={e => setAngleOffset(parseInt(e.target.value))} className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:bg-blue-500 [&::-webkit-slider-thumb]:rounded-full" />
-                  </div>
-                )}
-              </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Virtual Cursor */}
+      {/* ─────────── VIRTUAL CURSOR ─────────── */}
       {isReady && (() => {
         const activeColor = colorMode === 'dynamic' ? cursorPos.color : cursorColor;
-        const rotation = enableRotation ? cursorPos.angle + angleOffset : 0;
+        const rotation = cursorPos.angle;
         const isCentered = cursorStyle !== 'classic';
-        const scaleClass = (isLeftClick || isRightClick) ? "scale-75" : "scale-100";
-        const baseClasses = "transition-all duration-150 drop-shadow-lg";
-        
-        // Right click gets a distinct visual cue (e.g., amber border/glow)
-        const rightClickStyle = isRightClick ? { filter: 'drop-shadow(0 0 8px #f59e0b)' } : {};
+        const isClicking = isLeftClick || isRightClick;
+        const clickColor = isRightClick ? '#f59e0b' : activeColor;
 
         return (
           <div
             id="virtual-cursor"
-            className="fixed top-0 left-0 z-[60] pointer-events-none transition-transform duration-75 ease-out"
+            className="fixed top-0 left-0 z-[60] pointer-events-none"
             style={{
               transform: `translate(${cursorPos.x}px, ${cursorPos.y}px) rotate(${rotation}deg)`,
+              transition: 'transform 50ms linear'
             }}
           >
             {/* Custom Click Image */}
-            {clickImage && (isLeftClick || isRightClick) && (
-              <img 
-                src={clickImage} 
-                alt="Click Effect" 
-                className="absolute pointer-events-none z-10 drop-shadow-xl"
+            {clickImage && isClicking && (
+              <img
+                src={clickImage}
+                alt="Click Effect"
+                className="absolute pointer-events-none z-10"
                 style={{
-                  left: 0,
-                  top: 0,
+                  left: 0, top: 0,
                   transform: `translate(-${clickImageHotspot.x}%, -${clickImageHotspot.y}%)`,
-                  maxWidth: '150px',
-                  maxHeight: '150px'
+                  maxWidth: '150px', maxHeight: '150px'
                 }}
               />
             )}
 
             <div className="relative" style={{ transform: isCentered ? 'translate(-50%, -50%)' : 'none' }}>
-              
-              {/* Cursor Visuals based on style */}
+
               {cursorStyle === 'classic' && (
-                <MousePointer2 
-                  className={`w-8 h-8 ${baseClasses} ${scaleClass}`} 
-                  style={{ 
-                    color: isRightClick ? '#f59e0b' : activeColor, 
-                    fill: isLeftClick ? activeColor : isRightClick ? '#f59e0b' : 'rgba(255,255,255,0.8)',
-                    transformOrigin: '0 0',
-                    ...rightClickStyle
+                <MousePointer2
+                  className="w-8 h-8 drop-shadow-lg transition-all duration-100"
+                  style={{
+                    color: isClicking ? clickColor : activeColor,
+                    fill: isLeftClick ? activeColor : isRightClick ? '#f59e0b' : 'rgba(255,255,255,0.7)',
+                    filter: `drop-shadow(0 0 8px ${clickColor})`,
+                    transform: isClicking ? 'scale(0.8)' : 'scale(1)',
+                    transformOrigin: '0 0'
                   }}
                 />
               )}
-              
+
               {cursorStyle === 'dot' && (
-                <div 
-                  className={`w-6 h-6 rounded-full border-2 ${baseClasses} ${scaleClass}`}
-                  style={{ 
-                    backgroundColor: isLeftClick ? activeColor : isRightClick ? '#f59e0b' : 'rgba(255,255,255,0.3)', 
-                    borderColor: isRightClick ? '#f59e0b' : activeColor,
-                    ...rightClickStyle
-                  }} 
+                <div
+                  className="w-5 h-5 rounded-full transition-all duration-100"
+                  style={{
+                    background: isClicking ? clickColor : 'transparent',
+                    border: `2px solid ${isClicking ? clickColor : activeColor}`,
+                    boxShadow: `0 0 12px ${isClicking ? clickColor : activeColor}`,
+                    transform: isClicking ? 'scale(0.7)' : 'scale(1)'
+                  }}
                 />
               )}
 
               {cursorStyle === 'crosshair' && (
-                <Crosshair 
-                  className={`w-8 h-8 ${baseClasses} ${scaleClass}`}
-                  style={{ color: isRightClick ? '#f59e0b' : activeColor, ...rightClickStyle }}
+                <Crosshair
+                  className="w-7 h-7 transition-all duration-100"
+                  style={{
+                    color: isClicking ? clickColor : activeColor,
+                    filter: `drop-shadow(0 0 6px ${isClicking ? clickColor : activeColor})`,
+                    transform: isClicking ? 'scale(0.85)' : 'scale(1)'
+                  }}
                 />
               )}
 
               {cursorStyle === 'ring' && (
-                <Target 
-                  className={`w-8 h-8 ${baseClasses} ${scaleClass}`}
-                  style={{ color: isRightClick ? '#f59e0b' : activeColor, ...rightClickStyle }}
-                />
-              )}
-              
-              {/* Default Click Ripple Effect (only if no custom image) */}
-              {!clickImage && (isLeftClick || isRightClick) && (
-                <div 
-                  className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-10 h-10 rounded-full animate-ping opacity-75"
-                  style={{ backgroundColor: isRightClick ? '#f59e0b' : activeColor }}
+                <Target
+                  className="w-7 h-7 transition-all duration-100"
+                  style={{
+                    color: isClicking ? clickColor : activeColor,
+                    filter: `drop-shadow(0 0 8px ${isClicking ? clickColor : activeColor})`,
+                    transform: isClicking ? 'scale(0.85)' : 'scale(1)'
+                  }}
                 />
               )}
 
-              {/* Tooltip indicating state */}
-              <div className="absolute top-full mt-4 left-1/2 -translate-x-1/2 whitespace-nowrap" style={{ transform: `translateX(-50%) rotate(${-rotation}deg)` }}>
-                <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full bg-slate-900/80 text-white backdrop-blur-md transition-opacity duration-150 ${
-                  (isLeftClick || isRightClick) ? 'opacity-100' : 'opacity-0'
-                }`}>
-                  {isLeftClick ? 'Left Click' : isRightClick ? 'Right Click' : ''}
+              {/* Ripple on click */}
+              {!clickImage && isClicking && (
+                <div
+                  className="absolute rounded-full"
+                  style={{
+                    width: '40px', height: '40px',
+                    top: isCentered ? '0' : '4px',
+                    left: isCentered ? '0' : '4px',
+                    transform: 'translate(-50%, -50%)',
+                    border: `2px solid ${clickColor}`,
+                    boxShadow: `0 0 20px ${clickColor}`,
+                    animation: 'ripple 0.4s ease-out forwards'
+                  }}
+                />
+              )}
+
+              {/* Click State Label */}
+              <div className="absolute top-full mt-3 left-0 whitespace-nowrap" style={{ transform: `rotate(${-rotation}deg)` }}>
+                <span className={`text-[9px] font-bold uppercase tracking-widest px-2 py-1 rounded-full transition-opacity duration-100 ${isClicking ? 'opacity-100' : 'opacity-0'}`}
+                  style={{ background: `${clickColor}22`, color: clickColor, border: `1px solid ${clickColor}44` }}>
+                  {isLeftClick ? '← Left Click' : isRightClick ? 'Right Click →' : ''}
                 </span>
               </div>
             </div>
@@ -1187,104 +1348,116 @@ export default function App() {
         );
       })()}
 
-      {/* Onboarding Modal - Global Fixed Position */}
+      {/* ─────────── ONBOARDING / INSTALL GUIDE ─────────── */}
       {showOnboarding && (
-        <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-black/90 backdrop-blur-md animate-in fade-in duration-300 pointer-events-auto">
-          <div className="bg-slate-900 border border-slate-700/50 rounded-3xl p-8 max-w-lg w-full shadow-2xl overflow-y-auto max-h-[90vh] ring-1 ring-white/10">
-            {/* Status bar */}
-            <div className="flex items-center gap-2 mb-4">
-              <div className={`w-3 h-3 rounded-full ${
-                wsStatus === 'connected' ? 'bg-emerald-500 shadow-[0_0_10px_#10b981]' : 
-                wsStatus === 'connecting' ? 'bg-amber-500 animate-pulse' : 
-                'bg-rose-500'
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 pointer-events-auto"
+          style={{ background: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(20px)', animation: 'fadeInUp 0.3s ease' }}>
+          <div className="glass-panel-strong rounded-3xl p-8 max-w-lg w-full shadow-2xl overflow-y-auto max-h-[90vh] custom-scrollbar">
+
+            {/* WS status at top */}
+            <div className="flex items-center gap-2 mb-5">
+              <div className={`w-2.5 h-2.5 rounded-full ${
+                wsStatus === 'connected' ? 'status-dot-connected' :
+                wsStatus === 'connecting' ? 'status-dot-connecting animate-pulse' :
+                wsStatus === 'error' ? 'status-dot-error' : 'status-dot-disconnected'
               }`} />
-              <span className="text-xs font-medium text-slate-300 uppercase tracking-widest">
-                {wsStatus === 'connected' ? 'Conectado a PC' : 
-                 wsStatus === 'connecting' ? 'Buscando PC...' : 
-                 wsStatus === 'error' ? 'Error de Conexión' : 'Desconectado'}
+              <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">
+                {wsStatus === 'connected' ? 'PC Conectada' :
+                 wsStatus === 'connecting' ? 'Buscando PC...' :
+                 wsStatus === 'error' ? 'Error de Conexión' : 'Sin Conexión'}
               </span>
             </div>
 
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-2xl font-bold text-white flex items-center gap-3">
-                <div className="p-2 bg-blue-500 rounded-lg">
-                  <MousePointer2 className="w-6 h-6 text-white" />
+            <div className="flex justify-between items-center mb-7">
+              <h2 className="text-xl font-bold text-white flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl flex items-center justify-center flex-shrink-0"
+                  style={{ background: 'linear-gradient(135deg, #00f5d4, #0ea5e9)', boxShadow: '0 0 20px rgba(0,245,212,0.3)' }}>
+                  <MousePointer2 className="w-5 h-5 text-black" />
                 </div>
                 Configuración Inicial
               </h2>
-              <button 
-                onClick={closeOnboarding}
-                className="p-2 hover:bg-white/10 rounded-full transition-colors"
-              >
-                <X className="w-6 h-6 text-slate-400" />
+              <button onClick={closeOnboarding}
+                className="p-2 rounded-xl text-slate-400 hover:text-white transition-colors"
+                style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)' }}>
+                <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="space-y-6 text-left">
+            <div className="space-y-6">
+
               {/* Step 1 */}
-              <div className="flex gap-4">
-                <div className="flex-none w-8 h-8 rounded-full bg-blue-500/20 border border-blue-500/50 flex items-center justify-center text-blue-400 font-bold">1</div>
+              <div className="flex gap-4 p-4 rounded-2xl" style={{ background: 'rgba(0,245,212,0.04)', border: '1px solid rgba(0,245,212,0.1)' }}>
+                <div className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center font-bold text-sm text-black" style={{ background: 'linear-gradient(135deg, #00f5d4, #0ea5e9)' }}>1</div>
                 <div>
-                  <h3 className="text-white font-semibold mb-1 text-base leading-tight">Inicia el Servidor</h3>
-                  <p className="text-slate-400 text-sm mb-2">Copia y pega este comando en tu terminal para entrar en la carpeta correcta y ejecutar el script:</p>
-                  <code className="block p-2 bg-black/50 rounded-lg text-[10px] text-blue-300 border border-white/5 whitespace-pre-wrap font-mono">cd ~/Downloads/hand-tracking-cursor && python3 mouse_controller.py</code>
+                  <h3 className="text-white font-semibold mb-1">Inicia el Servidor</h3>
+                  <p className="text-slate-400 text-xs mb-3 leading-relaxed">Copia y pega este comando en tu Terminal para iniciar el controlador:</p>
+                  <code className="block p-3 rounded-xl text-[10px] text-neon border font-mono leading-relaxed" style={{ background: 'rgba(0,0,0,0.6)', borderColor: 'rgba(0,245,212,0.2)' }}>
+                    cd ~/Downloads/hand-tracking-cursor && python3 mouse_controller.py
+                  </code>
                 </div>
               </div>
 
               {/* Step 2 */}
-              <div className="flex gap-4">
-                <div className="flex-none w-8 h-8 rounded-full bg-blue-500/20 border border-blue-500/50 flex items-center justify-center text-blue-400 font-bold">2</div>
+              <div className="flex gap-4 p-4 rounded-2xl" style={{ background: 'rgba(14,165,233,0.04)', border: '1px solid rgba(14,165,233,0.1)' }}>
+                <div className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center font-bold text-sm text-black" style={{ background: 'linear-gradient(135deg, #0ea5e9, #6366f1)' }}>2</div>
                 <div>
-                  <h3 className="text-white font-semibold mb-1 text-base leading-tight">Permisos de macOS</h3>
-                  <p className="text-slate-400 text-sm">Habilita la Accesibilidad para tu Terminal en:</p>
-                  <p className="text-[10px] text-slate-500 mt-1 italic">Settings &gt; Privacy &amp; Security &gt; Accessibility</p>
+                  <h3 className="text-white font-semibold mb-1">Permisos de macOS</h3>
+                  <p className="text-slate-400 text-xs leading-relaxed">Activa <span className="text-slate-200 font-semibold">Accesibilidad</span> para tu Terminal:</p>
+                  <p className="text-[10px] italic mt-1" style={{ color: 'rgba(14,165,233,0.7)' }}>Settings → Privacy & Security → Accessibility</p>
                 </div>
               </div>
 
               {/* Step 3 */}
-              <div className="flex gap-4">
-                <div className="flex-none w-8 h-8 rounded-full bg-blue-500/20 border border-blue-500/50 flex items-center justify-center text-blue-400 font-bold">3</div>
-                <div>
-                  <h3 className="text-white font-semibold mb-1 text-base leading-tight">Conecta el Dispositivo</h3>
-                  <p className="text-slate-400 text-sm mb-3">Si usaste el link automático, ya deberías estar conectado:</p>
-                  <div className="flex gap-2">
-                    <input 
-                      type="text" 
-                      value={wsUrl}
-                      onChange={(e) => handleWsUrlChange(e.target.value)}
-                      placeholder="ws://192.168.1.XX:3001"
-                      className="flex-1 bg-black/40 border border-slate-700/50 rounded-xl px-4 py-2 text-white text-sm focus:outline-none focus:border-blue-500"
-                    />
-                  </div>
+              <div className="flex gap-4 p-4 rounded-2xl" style={{ background: 'rgba(168,85,247,0.04)', border: '1px solid rgba(168,85,247,0.1)' }}>
+                <div className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center font-bold text-sm text-white" style={{ background: 'linear-gradient(135deg, #a855f7, #ec4899)' }}>3</div>
+                <div className="flex-1">
+                  <h3 className="text-white font-semibold mb-1">Conecta el Dispositivo</h3>
+                  <p className="text-slate-400 text-xs mb-3 leading-relaxed">Si usas el link automático ya deberías estar conectado. Si no, ingresa la IP de tu Mac:</p>
+                  <input
+                    type="text"
+                    value={wsUrl}
+                    onChange={(e) => handleWsUrlChange(e.target.value)}
+                    placeholder="ws://192.168.1.XX:3001"
+                    className="w-full rounded-xl px-4 py-2 text-xs text-white outline-none transition-all font-mono"
+                    style={{ background: 'rgba(0,0,0,0.5)', border: '1px solid rgba(168,85,247,0.3)', color: '#a855f7' }}
+                  />
                 </div>
               </div>
 
+              {/* HTTPS warning */}
               {wsStatus === 'error' && window.location.protocol === 'https:' && (
-                <div className="p-4 bg-rose-500/10 border border-rose-500/20 rounded-2xl">
-                  <p className="text-[10px] text-rose-300 leading-relaxed uppercase tracking-wider">
-                    <b className="text-rose-400">⚠️ Bloqueo de Seguridad:</b> Tu navegador bloquea la conexión desde HTTPS a un servidor local. 
-                    <b> Abre el link de la terminal que empieza por HTTP (no HTTPS)</b> o usa un navegador que permita "Contenido no seguro".
+                <div className="p-4 rounded-2xl flex items-start gap-3" style={{ background: 'rgba(244,63,94,0.08)', border: '1px solid rgba(244,63,94,0.2)' }}>
+                  <span className="text-rose-400 text-lg flex-shrink-0">⚠</span>
+                  <p className="text-[10px] text-rose-300 leading-relaxed">
+                    <b className="text-rose-400 uppercase tracking-widest">Bloqueo HTTPS:</b> Tu navegador no permite la conexión desde HTTPS a un servidor local.
+                    Abre el link HTTP de la terminal (sin la 's') o permite contenido no seguro.
                   </p>
                 </div>
               )}
 
-              <div className="p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-2xl flex items-start gap-3">
-                <Info className="w-5 h-5 text-emerald-400 flex-none mt-0.5" />
-                <p className="text-[10px] text-emerald-300/80 leading-relaxed uppercase tracking-wider">
-                  <b>Tip Pro:</b> Activa el modo <b>PiP</b> (icono i arriba) para que el cursor no se detenga al cambiar de app.
+              {/* Pro tip */}
+              <div className="p-4 rounded-2xl flex items-start gap-3" style={{ background: 'rgba(0,245,212,0.06)', border: '1px solid rgba(0,245,212,0.15)' }}>
+                <span className="text-neon text-base flex-shrink-0">✦</span>
+                <p className="text-[10px] text-slate-400 leading-relaxed">
+                  <b className="text-neon uppercase tracking-widest">Modo Fondo:</b> El sistema ejecuta el tracking en segundo plano automáticamente usando un Web Worker, sin necesidad de configuración adicional.
                 </p>
               </div>
 
-              <button 
+              {/* CTA */}
+              <button
                 onClick={closeOnboarding}
-                className="w-full py-4 bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white font-bold rounded-2xl transition-all shadow-lg shadow-blue-500/20 active:scale-95"
+                className="w-full py-4 font-bold rounded-2xl text-sm uppercase tracking-widest text-black transition-all active:scale-95"
+                style={{
+                  background: 'linear-gradient(135deg, #00f5d4 0%, #0ea5e9 100%)',
+                  boxShadow: '0 0 30px rgba(0,245,212,0.3)'
+                }}
               >
-                ¡Entendido, vamos!
+                ¡Activar Sistema →
               </button>
             </div>
           </div>
         </div>
       )}
     </div>
-    );
+  );
 }

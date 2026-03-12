@@ -132,7 +132,8 @@ def worker_thread():
                     elif action == "scroll":
                         delta = command.get("delta", 0)
                         if delta != 0:
-                            pyautogui.scroll(int(delta))
+                            # Use pynput for smoother vertical scroll
+                            mouse.scroll(0, int(delta))
                     elif action == "volume":
                         direction = command.get("direction", "up")
                         print(f"🔊 Volumen {direction}")
@@ -179,7 +180,8 @@ def worker_thread():
                     nx, ny = latest_move.get("nx"), latest_move.get("ny")
                     if nx is not None and ny is not None:
                         screen_w, screen_h = pyautogui.size()
-                        pyautogui.moveTo(nx * screen_w, ny * screen_h)
+                        # Use pynput for much smoother and faster movement on macOS
+                        mouse.position = (nx * screen_w, ny * screen_h)
                         # Periodic movement log to avoid spamming
                         now = time.time()
                         if now - last_move_time > 2:
@@ -229,5 +231,18 @@ async def main_async():
 if __name__ == "__main__":
     try:
         asyncio.run(main_async())
+    except OSError as e:
+        if e.errno == 48:
+            print(f"\n❌ ERROR: El puerto 3001 ya está en uso.")
+            print(f"   Es probable que una instancia previa de 'mouse_controller.py' siga abierta.")
+            print(f"   Para cerrarla, corre este comando en tu terminal:")
+            print(f"   lsof -ti:3001 | xargs kill -9")
+            print(f"\n   Después intenta iniciar el script de nuevo.")
+        else:
+            print(f"❌ Error al iniciar el servidor: {e}")
     except KeyboardInterrupt:
-        print("\nServer stopped.")
+        print("\n👋 Deteniendo servidor...")
+        sys.exit(0)
+    except Exception as e:
+        print(f"❌ Error inesperado: {e}")
+        sys.exit(1)

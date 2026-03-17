@@ -180,9 +180,14 @@ def main():
                     if nx is not None and ny is not None:
                         # Scale to screen size dynamically
                         screen_w, screen_h = pyautogui.size()
-                        target_x = nx * screen_w
-                        target_y = ny * screen_h
-                        pyautogui.moveTo(target_x, target_y)
+                        target_x = int(nx * screen_w)
+                        target_y = int(ny * screen_h)
+                        
+                        # Use pynput for movement - smoother and less intrusive than pyautogui.moveTo
+                        # Also check for a tiny deadzone to avoid jitter
+                        curr_x, curr_y = mouse.position
+                        if abs(curr_x - target_x) > 1 or abs(curr_y - target_y) > 1:
+                            mouse.position = (target_x, target_y)
                 except Exception as e:
                     print(f"Move error: {e}", file=sys.stderr)
             

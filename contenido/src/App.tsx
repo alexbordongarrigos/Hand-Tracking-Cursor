@@ -628,15 +628,6 @@ export default function App() {
             color: currentColor
           } as any);
 
-          // Send to Backend (Using SMOOTHED coordinates)
-          if (electronAPI) {
-            electronAPI.syncAction({ 
-              type: 'move', 
-              nx: smoothedNormPosRef.current.x, 
-              ny: smoothedNormPosRef.current.y 
-            });
-          }
-
           // 2. Detect Gestures and Actions
           const thumbTip = landmarks[4];
           const indexTip = landmarks[8];
@@ -644,38 +635,61 @@ export default function App() {
           const ringTip = landmarks[16];
           const pinkyTip = landmarks[20];
 
-          // Palm facing check to prevent accidental clicks
+          // --- Robust Orientation Detection (3D Palm Normal) ---
           let isPalmFacing = true;
-          if (results.handednesses && results.handednesses.length > 0) {
-            const handedness = results.handednesses[0][0].categoryName;
-            const indexMcp = landmarks[5];
-            const pinkyMcp = landmarks[17];
+          let isFlipped = false;
+
+          if (results.worldLandmarks && results.worldLandmarks.length > 0) {
+            const world = results.worldLandmarks[0];
+            const handedness = results.handednesses?.[0]?.[0]?.categoryName || 'Right';
             
-            // X goes from 0 (left) to 1 (right) in camera frame
+            // Vectors for plane calculation: Wrist(0), IndexMCP(5), PinkyMCP(17)
+            const wrist = world[0];
+            const indexMcp = world[5];
+            const pinkyMcp = world[17];
+
+            const v1 = { x: indexMcp.x - wrist.x, y: indexMcp.y - wrist.y, z: indexMcp.z - wrist.z };
+            const v2 = { x: pinkyMcp.x - wrist.x, y: pinkyMcp.y - wrist.y, z: pinkyMcp.z - wrist.z };
+
+            // Cross product: N = V1 x V2
+            // nx = v1.y * v2.z - v1.z * v2.y
+            // ny = v1.z * v2.x - v1.x * v2.z
+            // nz = v1.x * v2.y - v1.y * v2.x
+            const nz = v1.x * v2.y - v1.y * v2.x;
+            
+            // Handedness correction: In Mediapipe, Z is towards the camera for worldLandmarks.
+            // For a right hand, the normal vector from Wrist->Index and Wrist->Pinky points "up" (out of palm).
+            // If nz > 0, the palm is facing the camera. If nz < 0, it's flipped.
+            // Inverse for Left hand.
             if (handedness === 'Right') {
-              // Right hand (camera perspective): palm faces camera if pinky is to the right of index
-              isPalmFacing = pinkyMcp.x > indexMcp.x;
+              isPalmFacing = nz > 0;
             } else {
-              // Left hand: palm faces camera if pinky is to the left of index
-              isPalmFacing = pinkyMcp.x < indexMcp.x;
+              isPalmFacing = nz < 0;
             }
+            isFlipped = !isPalmFacing;
           }
 
           // --- Anti-Mistouch Protection ---
           let isHandFacingOut = false;
           if (antiMistouchRef.current) {
-            // Umbrales donde la mano apunta fuera de un ángulo de interacción útil
-            // Pitch > 0.40 suele ser mano muy acostada o apuntando al techo
-            // Yaw > 0.45 es mano de perfil extremo
             const isPitchExtreme = Math.abs(rotationGimbalRef.current.pitch) > 0.40;
             const isYawExtreme = Math.abs(rotationGimbalRef.current.yaw) > 0.45;
             isHandFacingOut = isPitchExtreme || isYawExtreme;
           }
-          isHandExtremeAngleRef.current = isHandFacingOut;
+          
+          const canInteract = !isFlipped && !isHandFacingOut;
+          isHandExtremeAngleRef.current = !canInteract;
 
-          // Hysteresis: to start a gesture, palm must face and distance < PINCH_THRESHOLD
-          // If Anti-Mistouch is active and hand is facing out, we block starting ANY gesture
-          const canStartGesture = !isHandFacingOut && isPalmFacing;
+          // Gated MOVE synchronization (Only move if hand is facing correctly)
+          if (electronAPI && canInteract) {
+            electronAPI.syncAction({ 
+              type: 'move', 
+              nx: smoothedNormPosRef.current.x, 
+              ny: smoothedNormPosRef.current.y 
+            });
+          }
+
+          const canStartGesture = canInteract;
 
           const maintainThreshold = PINCH_THRESHOLD * 1.5;
           const currentStates = {
@@ -771,23 +785,21 @@ export default function App() {
             activeGesturesRef.current[finger] = currentStates[finger];
           }
 
-        } else {
-          // No hand detected - release locks but with a debounce for dropped frames
-          if (now - lastSeenHandTimeRef.current > 300) {
-            if (isDraggingRef.current && electronAPI) {
-              electronAPI.syncAction({ type: 'mouse_up', button: 'left' });
+          } else {
+            // No hand detected or hand lost validity - release locks
+            if (now - lastSeenHandTimeRef.current > 300 || isHandExtremeAngleRef.current) {
+              if ((isDraggingRef.current || activeGesturesRef.current.middle) && electronAPI) {
+                console.log("Force releasing mouse buttons (hand lost or flipped)");
+                electronAPI.syncAction({ type: 'mouse_up', button: 'left' });
+                electronAPI.syncAction({ type: 'mouse_up', button: 'right' });
+              }
+              setIsLeftClick(false);
+              setIsRightClick(false);
+              isDraggingRef.current = false;
+              isScrollingRef.current = false;
+              activeGesturesRef.current = { index: false, middle: false, ring: false, pinky: false };
             }
-            if (electronAPI) {
-              // Failsafe release for right click if hand is lost while holding
-              electronAPI.syncAction({ type: 'mouse_up', button: 'right' });
-            }
-            setIsLeftClick(false);
-            setIsRightClick(false);
-            isDraggingRef.current = false;
-            isScrollingRef.current = false;
-            activeGesturesRef.current = { index: false, middle: false, ring: false, pinky: false };
           }
-        }
       }
       
       // Use Web Worker metronome for robust background execution

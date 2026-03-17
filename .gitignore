@@ -10,3 +10,4 @@ release/
 *.app/
 *.asar
 *.dmg
+*.zip

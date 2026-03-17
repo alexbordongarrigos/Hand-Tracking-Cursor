@@ -12,7 +12,7 @@ import { Camera, MousePointer2,
   Info, Crosshair, Target, Settings2, X, Power, ShieldCheck, Zap } from 'lucide-react';
 
 // Smoothing factor for cursor movement (0 to 1, higher is smoother but slower)
-const DEFAULT_SMOOTHING = 0.7;
+const DEFAULT_SMOOTHING = 0.9;
 // Threshold for pinch detection (normalized distance)
 const PINCH_THRESHOLD = 0.04;
 // Scale factor to map a smaller central area of the camera to the full screen
@@ -79,7 +79,7 @@ export default function App() {
     index: 'click_left',
     middle: 'click_right',
     ring: 'scroll',
-    pinky: 'none'
+    pinky: 'key_f3'
   });
   // Se mantienen para retrocompatibilidad pero se esconden o ignoran en la lógica de trabas
   const [angleControlEnabled, setAngleControlEnabled] = useState(false);
@@ -580,8 +580,8 @@ export default function App() {
 
             // Inyección inteligente: Aspect Ratio (Y/X asimétricos)
             // MAGIC_YAW/MAGIC_PITCH compensan el hecho de que worldLandmarks está en escala de metros
-            const MAGIC_YAW = 18.0;   // Más sensible para cubrir pantallas anchas
-            const MAGIC_PITCH = 12.0; // Menos fuerza al Pitch para no irse rápido a los techos 16:9
+            const MAGIC_YAW = 25.0;   // Incrementado para mayor respuesta tipo "puntero"
+            const MAGIC_PITCH = 18.0; // Incrementado para mayor respuesta vertical
             
             rawNormX = baseNormX + (rotationGimbalRef.current.yaw * rotSensitivityXRef.current * MAGIC_YAW);
             rawNormY = baseNormY + (rotationGimbalRef.current.pitch * rotSensitivityYRef.current * MAGIC_PITCH);
@@ -594,8 +594,8 @@ export default function App() {
           // With smoothing and a slight scale factor for range.
           const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
           
-          const rawClampedX = Math.max(0, Math.min(1, baseNormX));
-          const rawClampedY = Math.max(0, Math.min(1, baseNormY));
+          const rawClampedX = Math.max(0, Math.min(1, rawNormX));
+          const rawClampedY = Math.max(0, Math.min(1, rawNormY));
 
           smoothedNormPosRef.current.x = lerp(smoothedNormPosRef.current.x, rawClampedX, 1 - s);
           smoothedNormPosRef.current.y = lerp(smoothedNormPosRef.current.y, rawClampedY, 1 - s);

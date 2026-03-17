@@ -5,7 +5,11 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
-import { Camera, MousePointer2, Settings, Info, Crosshair, Target, Settings2, X } from 'lucide-react';
+import { Camera, MousePointer2, 
+  Hand, 
+  Terminal,
+  Link,
+  Info, Crosshair, Target, Settings2, X, Power, ShieldCheck, Zap } from 'lucide-react';
 
 // Smoothing factor for cursor movement (0 to 1, higher is smoother but slower)
 const DEFAULT_SMOOTHING = 0.7;
@@ -62,15 +66,15 @@ export default function App() {
 
   // New Creative Settings
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [cursorStyle, setCursorStyle] = useState<'classic' | 'dot' | 'crosshair' | 'ring'>('classic');
-  const [colorMode, setColorMode] = useState<'custom' | 'dynamic'>('custom');
-  const [cursorColor, setCursorColor] = useState('#3b82f6');
+  const [cursorStyle, setCursorStyle] = useState<'classic' | 'dot' | 'crosshair' | 'ring'>(() => (localStorage.getItem('cursorStyle') as any) || 'classic');
+  const [colorMode, setColorMode] = useState<'custom' | 'dynamic'>(() => (localStorage.getItem('colorMode') as any) || 'custom');
+  const [cursorColor, setCursorColor] = useState(() => localStorage.getItem('cursorColor') || '#3b82f6');
   // Sensibilidad Dual
-  const [posSensitivityX, setPosSensitivityX] = useState(DEFAULT_SCALE_FACTOR);
-  const [posSensitivityY, setPosSensitivityY] = useState(DEFAULT_SCALE_FACTOR);
-  const [rotSensitivityX, setRotSensitivityX] = useState(1.0);
-  const [rotSensitivityY, setRotSensitivityY] = useState(1.0);
-  const [smoothing, setSmoothing] = useState(DEFAULT_SMOOTHING);
+  const [posSensitivityX, setPosSensitivityX] = useState(() => parseFloat(localStorage.getItem('posSensitivityX') || DEFAULT_SCALE_FACTOR.toString()));
+  const [posSensitivityY, setPosSensitivityY] = useState(() => parseFloat(localStorage.getItem('posSensitivityY') || DEFAULT_SCALE_FACTOR.toString()));
+  const [rotSensitivityX, setRotSensitivityX] = useState(() => parseFloat(localStorage.getItem('rotSensitivityX') || '1.0'));
+  const [rotSensitivityY, setRotSensitivityY] = useState(() => parseFloat(localStorage.getItem('rotSensitivityY') || '1.0'));
+  const [smoothing, setSmoothing] = useState(() => parseFloat(localStorage.getItem('smoothing') || DEFAULT_SMOOTHING.toString()));
   const [gestureMap, setGestureMap] = useState<Record<string, GestureAction>>({
     index: 'click_left',
     middle: 'click_right',
@@ -81,33 +85,41 @@ export default function App() {
   const [angleControlEnabled, setAngleControlEnabled] = useState(false);
   const [angleSensitivity, setAngleSensitivity] = useState(1.5);
   const [activationThreshold, setActivationThreshold] = useState(45);
-  const [clickImage, setClickImage] = useState<string | null>(null);
-  const [clickImageHotspot, setClickImageHotspot] = useState({ x: 50, y: 50 });
-  const [wsUrl, setWsUrl] = useState(() => {
-    // 1. Check URL parameters (Highest priority for automation)
-    const params = new URLSearchParams(window.location.search);
-    const wsParam = params.get('ws');
-    if (wsParam) return wsParam;
-    
-    // 2. Fallback to localStorage
-    return localStorage.getItem('wsUrl') || 'ws://localhost:3001';
+  const [clickImage, setClickImage] = useState<string | null>(() => localStorage.getItem('clickImage'));
+  const [clickImageHotspot, setClickImageHotspot] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('clickImageHotspot') || '{"x": 50, "y": 50}');
+    } catch {
+      return { x: 50, y: 50 };
+    }
   });
 
   const [antiMistouch, setAntiMistouch] = useState(() => {
-    return localStorage.getItem('antiMistouchEnabled') !== 'false'; // Predeterminado true
+    return localStorage.getItem('antiMistouchEnabled') !== 'false';
   });
-  
   const [isPipActive, setIsPipActive] = useState(false);
-  const [wsStatus, setWsStatus] = useState<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected');
-  const wakeLockRef = useRef<any>(null);
+  const [systemEnabled, setSystemEnabled] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('auto') === 'true') return true;
+    return localStorage.getItem('systemEnabled') !== 'false';
+  });
+  const [isAutoStarting, setIsAutoStarting] = useState(false);
 
-  // Auto-connect if URL parameter changes or is present
+  const [setupStep, setSetupStep] = useState<'checking' | 'permissions' | 'installing' | 'ready'>(() => {
+    return (localStorage.getItem('setupCompleted') === 'true') ? 'ready' : 'checking';
+  });
+  const [cameraAllowed, setCameraAllowed] = useState(false);
+  const [accessibilityAllowed, setAccessibilityAllowed] = useState(false);
+  const [installMessage, setInstallMessage] = useState('Analizando entorno...');
+  
+  const wakeLockRef = useRef<any>(null);
+  const electronAPI = (window as any).electronAPI;
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const wsParam = params.get('ws');
-    if (wsParam && wsParam !== wsUrl) {
-      setWsUrl(wsParam);
-      localStorage.setItem('wsUrl', wsParam);
+    // Auto-enable system if requested via URL
+    if (params.get('auto') === 'true') {
+      setSystemEnabled(true);
     }
   }, []);
 
@@ -122,7 +134,6 @@ export default function App() {
   const isLeftClickRef = useRef(false);
   const isRightClickRef = useRef(false);
   const yOffsetRef = useRef(0);
-  const wsRef = useRef<WebSocket | null>(null);
   const workerRef = useRef<Worker | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -156,57 +167,141 @@ export default function App() {
   }, [yOffset]);
 
   useEffect(() => {
-    let reconnectTimeout: NodeJS.Timeout;
-    const connectWS = () => {
-      try {
-        const ws = new WebSocket(wsUrl);
-        setWsStatus('connecting');
-        ws.onopen = () => {
-          console.log('WebSocket connected to', wsUrl);
-          setWsStatus('connected');
-        };
-        ws.onclose = () => {
-          console.log('WebSocket disconnected, reconnecting...');
-          setWsStatus('disconnected');
-          reconnectTimeout = setTimeout(connectWS, 3000);
-        };
-        ws.onerror = (err) => {
-          console.error('WebSocket error:', err);
-          setWsStatus('error');
-        };
-        wsRef.current = ws;
-      } catch (e) {
-        console.error('Invalid WebSocket URL', e);
-        setWsStatus('error');
-      }
-    };
-    connectWS();
-    return () => {
-      clearTimeout(reconnectTimeout);
-      if (wsRef.current) wsRef.current.close();
-    };
-  }, [wsUrl]);
+    colorModeRef.current = colorMode;
+    posSensitivityXRef.current = posSensitivityX;
+    posSensitivityYRef.current = posSensitivityY;
+    rotSensitivityXRef.current = rotSensitivityX;
+    rotSensitivityYRef.current = rotSensitivityY;
+    smoothingRef.current = smoothing;
+    gestureMapRef.current = gestureMap;
+    angleControlRef.current = angleControlEnabled;
+    angleSensitivityRef.current = angleSensitivity;
+    activationThresholdRef.current = activationThreshold;
+    antiMistouchRef.current = antiMistouch;
+  }, [colorMode, posSensitivityX, posSensitivityY, rotSensitivityX, rotSensitivityY, smoothing, gestureMap, angleControlEnabled, angleSensitivity, activationThreshold, antiMistouch]);
 
-  const handleWsUrlChange = (newUrl: string) => {
-    setWsUrl(newUrl);
-    localStorage.setItem('wsUrl', newUrl);
-  };
+
 
   useEffect(() => {
-    if (wsRef.current && wsUrl.includes(':3001')) { // Basic check for active custom URL
-      const checkConnection = setInterval(() => {
-        if (wsRef.current?.readyState === WebSocket.OPEN) {
-          const params = new URLSearchParams(window.location.search);
-          if (params.get('ws')) {
-            console.log('Auto-connected via URL parameter, closing onboarding...');
-            closeOnboarding();
-          }
-          clearInterval(checkConnection);
+    if (!electronAPI) return;
+
+    const checkSystem = async () => {
+      const perms = await electronAPI.checkPermissions();
+      const cameraOk = perms.camera === 'granted';
+      const accessOk = perms.accessibility;
+      const depsOk = perms.dependencies;
+      
+      setCameraAllowed(cameraOk);
+      setAccessibilityAllowed(accessOk);
+
+      if (setupStep === 'checking') {
+        if (!cameraOk || !accessOk) {
+          setSetupStep('permissions');
+        } else if (!depsOk) {
+          startSetupFlow();
+        } else {
+          // All good
+          localStorage.setItem('setupCompleted', 'true');
+          setSetupStep('ready');
+          if (!systemEnabled) handleToggleSystem(true);
         }
-      }, 1000);
-      return () => clearInterval(checkConnection);
+      } else if (setupStep === 'ready' && !systemEnabled && !isAutoStarting) {
+        setIsAutoStarting(true);
+        handleToggleSystem(true);
+      }
+    };
+
+    const startSetupFlow = async () => {
+      setSetupStep('installing');
+      setInstallMessage('Verificando y configurando componentes de Python...');
+      const success = await electronAPI.startInstallation();
+      if (success) {
+        localStorage.setItem('setupCompleted', 'true');
+        setSetupStep('ready');
+        handleToggleSystem(true);
+      } else {
+        setInstallMessage('Error en la configuración automática. Por favor, asegúrate de tener conexión a internet y reinicia la aplicación.');
+        // Don't force advance to ready if it failed
+      }
+    };
+
+    checkSystem();
+
+    const unsubs = [
+      electronAPI.onSetupStatus((msg: string) => setInstallMessage(msg)),
+      electronAPI.onRequestAccessibility(() => setSetupStep('permissions'))
+    ];
+
+    return () => {
+      unsubs.forEach(u => u?.());
+    };
+  }, [electronAPI, setupStep]);
+  useEffect(() => {
+    if (!electronAPI || setupStep !== 'permissions') return;
+
+    console.log('[App] Starting permission polling...');
+    const pollInterval = setInterval(async () => {
+      const perms = await electronAPI.checkPermissions();
+      const cameraOk = perms.camera === 'granted';
+      const accessOk = perms.accessibility;
+      
+      console.log(`[Permission Poll] Camera: ${perms.camera}, Accessibility: ${accessOk}`);
+
+      if (cameraOk !== cameraAllowed) setCameraAllowed(cameraOk);
+      if (accessOk !== accessibilityAllowed) setAccessibilityAllowed(accessOk);
+
+      if (cameraOk && accessOk) {
+        console.log('[Permission Poll] Both permissions granted! Advancing...');
+        clearInterval(pollInterval);
+        setSetupStep('checking'); // Re-trigger flow
+      }
+    }, 1000);
+
+    return () => {
+      console.log('[App] Stopping permission polling.');
+      clearInterval(pollInterval);
+    };
+  }, [setupStep, electronAPI, cameraAllowed, accessibilityAllowed]);
+
+  const handleToggleSystem = async (enabled: boolean) => {
+    if (!electronAPI) return;
+    const success = await electronAPI.toggleSystem(enabled);
+    if (success) {
+      setSystemEnabled(enabled);
+      localStorage.setItem('systemEnabled', enabled.toString());
+      if (!enabled) { /* cleanup if needed */ }
     }
-  }, [wsUrl]);
+  };
+
+  const handleGrantPermissions = async () => {
+    if (!electronAPI) return;
+    setInstallMessage('Validando credenciales biométricas...');
+    const perms = await electronAPI.requestPermissions();
+    if (perms.camera === 'granted' && perms.accessibility) {
+       handleStartInstallation();
+    }
+  };
+
+  const handleStartInstallation = async () => {
+    if (!electronAPI) return;
+    setSetupStep('installing');
+    setInstallMessage('Sincronizando Neural Cursor con el kernel de macOS...');
+    
+    // Small delay for UI feedback
+    await new Promise(r => setTimeout(r, 1000));
+    
+    const success = await electronAPI.startInstallation();
+    if (success) {
+      setSetupStep('ready');
+      setIsReady(true);
+      localStorage.setItem('setupCompleted', 'true');
+      if (systemEnabled) {
+        electronAPI.toggleSystem(true);
+      }
+    } else {
+      setInstallMessage('La sincronización falló. Verifica tu conexión e intenta abrir la app nuevamente.');
+    }
+  };
 
   const closeOnboarding = () => {
     setShowOnboarding(false);
@@ -495,13 +590,15 @@ export default function App() {
             rawNormY = baseNormY;
           }
 
-          // Clamp to normalized boundaries
-          const clampedX = Math.max(0, Math.min(1, rawNormX));
-          const clampedY = Math.max(0, Math.min(1, rawNormY));
+          // Simplify normalization: Directly map camera space to screen space
+          // With smoothing and a slight scale factor for range.
+          const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+          
+          const rawClampedX = Math.max(0, Math.min(1, baseNormX));
+          const rawClampedY = Math.max(0, Math.min(1, baseNormY));
 
-          // Apply EMA Smoothing on Normalized Values (Fixes "smoothing only on page")
-          smoothedNormPosRef.current.x = (smoothedNormPosRef.current.x * s) + (clampedX * (1 - s));
-          smoothedNormPosRef.current.y = (smoothedNormPosRef.current.y * s) + (clampedY * (1 - s));
+          smoothedNormPosRef.current.x = lerp(smoothedNormPosRef.current.x, rawClampedX, 1 - s);
+          smoothedNormPosRef.current.y = lerp(smoothedNormPosRef.current.y, rawClampedY, 1 - s);
 
           // Map to local screen pixels for UI
           const uiX = smoothedNormPosRef.current.x * window.innerWidth;
@@ -532,12 +629,12 @@ export default function App() {
           } as any);
 
           // Send to Backend (Using SMOOTHED coordinates)
-          if (wsRef.current?.readyState === WebSocket.OPEN) {
-            wsRef.current.send(JSON.stringify({ 
+          if (electronAPI) {
+            electronAPI.syncAction({ 
               type: 'move', 
               nx: smoothedNormPosRef.current.x, 
               ny: smoothedNormPosRef.current.y 
-            }));
+            });
           }
 
           // 2. Detect Gestures and Actions
@@ -601,8 +698,7 @@ export default function App() {
             if (action === 'none') return;
             
             const now = performance.now();
-            const ws = wsRef.current;
-            const isOpen = ws?.readyState === WebSocket.OPEN;
+            const isOpen = systemEnabled && !!electronAPI;
 
             // Left/Right Click & Drag (Continuous hold)
             if (action.startsWith('click_') || action === 'drag') {
@@ -610,11 +706,13 @@ export default function App() {
               if (isActive && !wasActive) {
                     if (btn === 'left') { isDraggingRef.current = true; setIsLeftClick(true); }
                     else { setIsRightClick(true); }
-                    if (isOpen) ws.send(JSON.stringify({ type: 'mouse_down', button: btn }));
+                    console.log(`Sending action: mouse_down (${btn})`);
+                    if (isOpen) electronAPI.syncAction({ type: 'mouse_down', button: btn });
               } else if (!isActive && wasActive) {
                     if (btn === 'left') { isDraggingRef.current = false; setIsLeftClick(false); }
                     else { setIsRightClick(false); }
-                    if (isOpen) ws.send(JSON.stringify({ type: 'mouse_up', button: btn }));
+                    console.log(`Sending action: mouse_up (${btn})`);
+                    if (isOpen) electronAPI.syncAction({ type: 'mouse_up', button: btn });
                   }
                   return;
             }
@@ -629,7 +727,7 @@ export default function App() {
                 // Scroll multiplier
                 if (Math.abs(delta) > 10) {
                   const scrollAmount = delta * 0.5; // adjust multiplier as needed
-                  if (isOpen) ws.send(JSON.stringify({ type: 'scroll', delta: scrollAmount }));
+                  if (isOpen) electronAPI.syncAction({ type: 'scroll', delta: scrollAmount });
                   scrollStartYRef.current = smoothedPosRef.current.y;
                 }
               } else if (!isActive && wasActive) {
@@ -644,13 +742,13 @@ export default function App() {
               
               if (action === 'volume_up' || action === 'volume_down' || action === 'brightness_up' || action === 'brightness_down') {
                 const [type, dir] = action.split('_');
-                if (isOpen) ws.send(JSON.stringify({ type, direction: dir }));
+                if (isOpen) electronAPI.syncAction({ type, direction: dir });
               }
               else if (action.startsWith('key_') || action.match(/^f(1[0-2]|[1-9])$/i)) {
                 const keyName = action.startsWith('key_') ? action.replace('key_', '') : action;
                 if (isOpen) {
                   console.log('Sending key gesture:', keyName);
-                  ws.send(JSON.stringify({ type: 'key', key: keyName }));
+                  electronAPI.syncAction({ type: 'key', key: keyName });
                 }
               }
               else if (action.startsWith('hotkey_')) {
@@ -660,7 +758,7 @@ export default function App() {
                 if (combo === 'paste') keys = ['cmd', 'v'];
                 if (combo === 'undo') keys = ['cmd', 'z'];
                 
-                if (isOpen) ws.send(JSON.stringify({ type: 'hotkey', keys }));
+                if (isOpen) electronAPI.syncAction({ type: 'hotkey', keys });
               }
               
               lastActionTimeRef.current = now;
@@ -676,12 +774,12 @@ export default function App() {
         } else {
           // No hand detected - release locks but with a debounce for dropped frames
           if (now - lastSeenHandTimeRef.current > 300) {
-            if (isDraggingRef.current && wsRef.current?.readyState === WebSocket.OPEN) {
-              wsRef.current.send(JSON.stringify({ type: 'mouse_up', button: 'left' }));
+            if (isDraggingRef.current && electronAPI) {
+              electronAPI.syncAction({ type: 'mouse_up', button: 'left' });
             }
-            if (wsRef.current?.readyState === WebSocket.OPEN) {
+            if (electronAPI) {
               // Failsafe release for right click if hand is lost while holding
-              wsRef.current.send(JSON.stringify({ type: 'mouse_up', button: 'right' }));
+              electronAPI.syncAction({ type: 'mouse_up', button: 'right' });
             }
             setIsLeftClick(false);
             setIsRightClick(false);
@@ -691,6 +789,7 @@ export default function App() {
           }
         }
       }
+      
       // Use Web Worker metronome for robust background execution
       if (workerRef.current) {
         workerRef.current.onmessage = (e) => {
@@ -704,8 +803,8 @@ export default function App() {
   };
 
   const simulateClick = (type: 'left' | 'right', x: number, y: number) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'click', button: type }));
+    if (electronAPI) {
+      electronAPI.syncAction({ type: 'click', button: type });
     }
 
     // Temporarily hide our virtual cursor so document.elementFromPoint doesn't just find the cursor itself
@@ -777,6 +876,10 @@ export default function App() {
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
         * { font-family: 'Inter', sans-serif; }
         code, input[type="text"].font-mono { font-family: 'JetBrains Mono', monospace; }
+
+        .bg-neon { background: #00f5d4 !important; color: #000 !important; }
+        .bg-neon:hover { box-shadow: 0 0 20px rgba(0,245,212,0.4); transform: scale(1.02); }
+        .text-neon { color: #00f5d4; }
 
         @keyframes pulse {
           0%, 100% { transform: scale(1); opacity: 0.08; }
@@ -897,7 +1000,7 @@ export default function App() {
           <div className="relative z-10 flex flex-col sm:flex-row items-center justify-between pb-6 border-b border-[rgba(0,245,212,0.1)] gap-4">
             
             {/* Logo & Info */}
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-6">
               <div className="w-14 h-14 rounded-2xl flex items-center justify-center flex-shrink-0"
                 style={{ background: 'linear-gradient(135deg, #00f5d4 0%, #0ea5e9 100%)', boxShadow: '0 0 30px rgba(0,245,212,0.3)', animation: 'float 4s ease-in-out infinite' }}>
                 <MousePointer2 className="w-7 h-7 text-black" />
@@ -906,15 +1009,22 @@ export default function App() {
                 <h1 className="text-xl sm:text-2xl font-bold tracking-[0.2em] uppercase text-neon" style={{ textShadow: '0 0 10px rgba(0,245,212,0.3)' }}>Neural Cursor</h1>
                 <p className="text-[10px] text-slate-400 tracking-[0.3em] uppercase mt-1">Advanced Hand Tracking v2.0</p>
               </div>
+
+              {/* Central Status Indicator (Simplified Header) */}
+              <div className="ml-8 hidden lg:flex items-center gap-3 px-4 py-2 rounded-xl bg-black/20 border border-white/5">
+                <div className={`w-1.5 h-1.5 rounded-full ${systemEnabled ? 'bg-neon shadow-[0_0_8px_#00f5d4]' : 'bg-slate-600'}`} />
+                <span className="text-[9px] font-bold uppercase tracking-widest text-slate-400">
+                  {systemEnabled ? 'Sistema Online' : 'Sistema en Reposo'}
+                </span>
+              </div>
             </div>
 
             <div className="flex items-center gap-6">
               {/* Status indicators */}
-              <div className="flex flex-col items-end gap-2 pr-6 border-r border-[rgba(255,255,255,0.05)] hidden md:flex">
                  <div className="flex items-center gap-2">
-                   <div className={`w-2 h-2 rounded-full flex-shrink-0 ${wsStatus === 'connected' ? 'status-dot-connected' : 'status-dot-error'}`} />
+                   <div className={`w-2 h-2 rounded-full flex-shrink-0 ${systemEnabled ? 'status-dot-connected' : 'status-dot-disconnected'}`} />
                    <span className="text-[10px] uppercase tracking-[0.15em] font-mono text-slate-400 max-w-[90px] text-right">
-                      {wsStatus === 'connected' ? 'PC SYNC: OK' : 'NO SYNC'}
+                      {systemEnabled ? 'BACKEND: ON' : 'BACKEND: OFF'}
                    </span>
                  </div>
                  <div className="flex items-center gap-2">
@@ -923,7 +1033,7 @@ export default function App() {
                       {isReady ? 'AI: ACTIVE' : 'CALIBRATING'}
                    </span>
                  </div>
-              </div>
+
 
               {/* Action Buttons */}
               <div className="flex gap-3">
@@ -931,7 +1041,7 @@ export default function App() {
                   <Settings2 className="w-5 h-5" />
                   <span className="text-[10px] font-bold uppercase tracking-widest hidden sm:block">Ajustes</span>
                 </button>
-                <button id="btn-guide" onClick={() => setShowOnboarding(true)} className="neon-btn p-3 sm:px-4 sm:py-3 rounded-xl flex items-center gap-2" title="Guía de Instalación">
+                <button id="btn-guide" onClick={() => setShowOnboarding(true)} className="neon-btn p-3 sm:px-4 sm:py-3 rounded-xl flex items-center gap-2" title="Guía de Interacción">
                   <Target className="w-5 h-5" />
                   <span className="text-[10px] font-bold uppercase tracking-widest hidden sm:block">Guía</span>
                 </button>
@@ -949,91 +1059,143 @@ export default function App() {
             </div>
           )}
 
-          {/* Main Dashboard Content Layout */}
-          <div className="relative z-10 grid grid-cols-1 md:grid-cols-[1fr_auto_auto] gap-6 items-stretch min-h-[280px]">
+          {/* Main Dashboard Content Layout - GRID 12 COLS */}
+          <div className="relative z-10 grid grid-cols-12 gap-6 items-stretch min-h-[420px]">
             
-            {/* Left: Instructions & Controls */}
-            <div className="flex flex-col justify-between glass-panel rounded-2xl p-6 relative overflow-hidden group hover:border-[rgba(0,245,212,0.3)] transition-colors">
-              <div className="absolute top-0 right-0 w-32 h-32 bg-[rgba(0,245,212,0.05)] rounded-bl-full pointer-events-none transition-transform group-hover:scale-110" />
-              <div>
-                <div className="flex items-center gap-2 mb-4">
-                  <div className="w-1 h-4 bg-[#00f5d4] rounded-full shadow-[0_0_8px_#00f5d4]" />
-                  <h3 className="text-xs uppercase tracking-[0.2em] text-[#00f5d4] font-bold">Mapeo Biométrico</h3>
-                </div>
-                <p className="text-sm text-slate-300 leading-relaxed mb-6 font-light">
-                  Extiende tu palma abierta frente a la cámara. El cursor escaneará tu movimiento en 3D para abarcar toda la pantalla con absoluta fluidez.
-                </p>
-                
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="bg-[rgba(0,0,0,0.3)] border border-[rgba(255,255,255,0.05)] rounded-xl p-4 flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-lg bg-[rgba(0,245,212,0.1)] flex items-center justify-center border border-[rgba(0,245,212,0.2)]">
-                      <div className="w-3 h-3 rounded-full bg-[#00f5d4] shadow-[0_0_10px_#00f5d4]" />
-                    </div>
-                    <div>
-                      <span className="block text-[9px] uppercase tracking-widest text-slate-500 mb-0.5">Click Principal</span>
-                      <span className="block text-xs font-bold text-white tracking-wide">Pulgar + Índice</span>
-                    </div>
+            {/* Left: Instructions & Controls (COL 4) */}
+            <div className="col-span-12 lg:col-span-4 flex flex-col gap-6">
+              <div className="flex flex-col justify-between glass-panel rounded-3xl p-6 h-full relative overflow-hidden group hover:border-[rgba(0,245,212,0.3)] transition-all cursor-default">
+                <div className="absolute top-0 right-0 w-32 h-32 bg-[rgba(0,245,212,0.05)] rounded-bl-full pointer-events-none transition-transform group-hover:scale-110" />
+                <div>
+                  <div className="flex items-center gap-2 mb-4">
+                    <div className="w-1 h-4 bg-[#00f5d4] rounded-full shadow-[0_0_8px_#00f5d4]" />
+                    <h3 className="text-[10px] uppercase tracking-[0.2em] text-[#00f5d4] font-black">Mapeo Biométrico</h3>
                   </div>
+                  <p className="text-xs text-slate-400 leading-relaxed mb-6">
+                    Extiende tu palma frente a la cámara. El sistema traduce cada milímetro en coordenadas precisas.
+                  </p>
                   
-                  <div className="bg-[rgba(0,0,0,0.3)] border border-[rgba(255,255,255,0.05)] rounded-xl p-4 flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-lg bg-[rgba(245,158,11,0.1)] flex items-center justify-center border border-[rgba(245,158,11,0.2)]">
-                      <div className="w-3 h-3 rounded-full bg-[#f59e0b] shadow-[0_0_10px_#f59e0b]" />
+                  <div className="space-y-3">
+                    <div className="bg-black/30 border border-white/5 rounded-2xl p-4 flex items-center gap-4 group/item hover:bg-black/50 transition-colors">
+                      <div className="w-10 h-10 rounded-xl bg-neon/10 flex items-center justify-center border border-neon/20 shadow-inner group-hover/item:shadow-[0_0_15px_rgba(0,245,212,0.2)] transition-all">
+                        <div className="w-3 h-3 rounded-full bg-neon shadow-[0_0_10px_#00f5d4]" />
+                      </div>
+                      <div>
+                        <span className="block text-[8px] uppercase tracking-[0.2em] text-slate-500 mb-0.5">Mando Principal</span>
+                        <span className="block text-xs font-black text-white uppercase tracking-widest">Pulgar + Índice</span>
+                      </div>
                     </div>
-                    <div>
-                      <span className="block text-[9px] uppercase tracking-widest text-slate-500 mb-0.5">Click Secundario</span>
-                      <span className="block text-xs font-bold text-white tracking-wide">Pulgar + Medio</span>
+                    
+                    <div className="bg-black/30 border border-white/5 rounded-2xl p-4 flex items-center gap-4 group/item hover:bg-black/50 transition-colors">
+                      <div className="w-10 h-10 rounded-xl bg-amber-500/10 flex items-center justify-center border border-amber-500/20 shadow-inner group-hover/item:shadow-[0_0_15px_rgba(245,158,11,0.2)] transition-all">
+                        <div className="w-3 h-3 rounded-full bg-amber-500 shadow-[0_0_10px_#f59e0b]" />
+                      </div>
+                      <div>
+                        <span className="block text-[8px] uppercase tracking-[0.2em] text-slate-500 mb-0.5">Mando Secundario</span>
+                        <span className="block text-xs font-black text-white uppercase tracking-widest">Pulgar + Medio</span>
+                      </div>
                     </div>
                   </div>
                 </div>
               </div>
             </div>
 
-            {/* Middle: Y-Offset Vertical Slider */}
-            <div className="w-24 glass-panel rounded-2xl p-4 flex flex-col items-center justify-between">
-               <span className="text-[10px] font-bold text-[#00f5d4] uppercase tracking-widest text-center pt-2 opacity-80">Eje Z <br/><span className="text-[8px] font-normal opacity-70">(Altura)</span></span>
-               <div className="relative h-full w-full flex items-center justify-center my-4">
-                 <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 rounded-full" style={{ background: 'linear-gradient(to bottom, rgba(0,245,212,0.1), rgba(0,245,212,0.6), rgba(0,245,212,0.1))' }} />
-                 <input
-                   type="range" min="-0.5" max="0.5" step="0.01" value={yOffset}
-                   onChange={(e) => setYOffset(parseFloat(e.target.value))}
-                   className="slider-base slider-neon h-full origin-center cursor-pointer relative z-10"
-                   style={{ writingMode: 'vertical-lr', direction: 'rtl', width: '6px', WebkitAppearance: 'slider-vertical' } as any}
-                 />
-               </div>
-               <div className="bg-black/50 border border-[rgba(0,245,212,0.3)] px-3 py-1.5 rounded-lg shadow-[0_0_15px_rgba(0,245,212,0.1)]">
-                 <span className="text-[11px] font-mono font-bold text-[#00f5d4]">
-                   {yOffset > 0 ? '+' : ''}{Math.round(yOffset * 100)}
-                 </span>
-               </div>
+            {/* CENTER: MASTER POWER REACTOR (COL 4) */}
+            <div className="col-span-12 lg:col-span-4 flex flex-col gap-6">
+              <div className="glass-panel-strong rounded-[2.5rem] p-8 flex flex-col items-center justify-center gap-8 h-full relative overflow-hidden group">
+                {/* Decorative Elements */}
+                <div className="absolute inset-0 z-0 pointer-events-none">
+                   <div className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-64 h-64 rounded-full blur-[60px] transition-all duration-1000 ${systemEnabled ? 'bg-neon/10' : 'bg-slate-900'}`} />
+                   <div className="absolute inset-0" style={{ backgroundImage: 'radial-gradient(circle at center, rgba(0,245,212,0.03) 0%, transparent 70%)' }} />
+                </div>
+
+                <div className="relative z-10 text-center space-y-2">
+                   <h3 className="text-[11px] font-black uppercase tracking-[0.3em] text-slate-500">Control Maestro</h3>
+                   <p className={`text-[9px] font-bold uppercase tracking-widest ${systemEnabled ? 'text-neon' : 'text-slate-400'}`}>
+                      {systemEnabled ? 'Reactor en Línea' : 'Sincronización Off'}
+                   </p>
+                </div>
+
+                {/* BIG PROMINENT POWER BUTTON */}
+                <button 
+                  onClick={() => handleToggleSystem(!systemEnabled)}
+                  className={`group relative w-48 h-48 rounded-full z-10 flex items-center justify-center transition-all duration-700 shadow-2xl overflow-hidden ${
+                    systemEnabled 
+                      ? 'bg-black border-2 border-neon/50 shadow-[0_0_50px_rgba(0,245,212,0.25)]' 
+                      : 'bg-slate-900 border-2 border-white/5 hover:border-white/20'
+                  }`}
+                >
+                   {/* Radial Pulse Effect when connected */}
+                   {systemEnabled && <div className="absolute inset-0 rounded-full animate-ping opacity-20 bg-neon scale-75" style={{ animationDuration: '3s' }} />}
+                   
+                   <div className={`transition-all duration-500 flex flex-col items-center justify-center gap-3 ${systemEnabled ? 'scale-110' : 'scale-90 opacity-60'}`}>
+                      <Power className={`w-12 h-12 transition-colors duration-500 ${systemEnabled ? 'text-neon drop-shadow-[0_0_15px_rgba(0,245,212,0.8)]' : 'text-slate-500'}`} />
+                      <span className={`text-[10px] font-black uppercase tracking-[0.2em] transition-colors duration-500 ${systemEnabled ? 'text-white' : 'text-slate-500'}`}>
+                         {systemEnabled ? 'DESACTIVAR' : 'ACTIVAR SYSTEM'}
+                      </span>
+                   </div>
+
+                   {/* Hover Glow */}
+                   <div className="absolute inset-0 bg-white/5 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
+                </button>
+
+                <div className="relative z-10 flex gap-4 w-full justify-center mt-2">
+                   <div className="bg-black/40 border border-white/5 px-4 py-2 rounded-xl flex items-center gap-3">
+                      <div className={`w-2 h-2 rounded-full ${systemEnabled ? 'bg-neon animate-pulse' : 'bg-slate-700'}`} />
+                      <span className="text-[8px] font-black uppercase tracking-widest text-slate-400">Session: Auto</span>
+                   </div>
+                </div>
+              </div>
             </div>
 
-            {/* Right: Camera Feed (if active) */}
-            <div className={`transition-all duration-500 origin-left ${showDebug ? 'w-[360px] opacity-100' : 'w-0 opacity-0 overflow-hidden ml-0 md:ml-[-1.5rem]'} glass-panel rounded-2xl p-2 relative flex-shrink-0 flex items-center justify-center bg-black/40`}>
-              {showDebug && (
-                 <div className="relative w-full aspect-video rounded-xl overflow-hidden neon-border shadow-2xl">
-                   <video
-                     ref={(el) => {
-                       if (el && videoRef.current && el.srcObject !== videoRef.current.srcObject) {
-                         el.srcObject = videoRef.current.srcObject;
-                         el.play().catch(() => console.log("Play interrupted"));
-                       }
-                     }}
-                     className="absolute inset-0 w-full h-full object-cover -scale-x-100"
-                     muted playsInline
-                   />
-                   <canvas ref={canvasRef} className="absolute inset-0 w-full h-full object-cover z-10" />
-                   {/* Scan line overlay */}
-                   <div className="absolute inset-0 z-20 pointer-events-none" style={{ background: 'repeating-linear-gradient(0deg, transparent, transparent 3px, rgba(0,245,212,0.02) 3px, rgba(0,245,212,0.02) 4px)' }} />
-                   
-                   <div className="absolute top-3 left-3 z-30 flex items-center gap-2 bg-black/60 backdrop-blur-md px-2 py-1.5 rounded-lg border border-white/10">
-                     <div className="w-2 h-2 rounded-full animate-pulse" style={{ background: '#f43f5e', boxShadow: '0 0 8px #f43f5e' }} />
-                     <span className="text-[9px] uppercase tracking-[0.2em] font-bold text-white">LIVE VISUALS</span>
-                   </div>
-                   <div className="absolute bottom-0 left-0 right-0 z-30 p-3 bg-gradient-to-t from-black/90 via-black/40 to-transparent">
-                     <span className="text-[9px] uppercase tracking-[0.2em] text-[#00f5d4] font-mono font-bold block text-center">Neural Tracking Core 2.0</span>
-                   </div>
+            {/* Right: Camera & Automation (COL 4) */}
+            <div className="col-span-12 lg:col-span-4 flex flex-col gap-6">
+              {/* Camera Feed Card */}
+              <div className="glass-panel rounded-3xl p-4 flex-1 flex flex-col gap-4 relative overflow-hidden group">
+                 <div className="flex items-center justify-between">
+                   <span className="text-[9px] font-black uppercase tracking-widest text-[#00f5d4] flex items-center gap-2">
+                      <div className={`w-1.5 h-1.5 rounded-full ${showDebug ? 'bg-rose-500 shadow-[0_0_8px_#f43f5e]' : 'bg-slate-600'}`} />
+                      Neural Vision Engine
+                   </span>
+                   <button onClick={() => setShowDebug(!showDebug)} className="text-[8px] font-bold uppercase tracking-widest text-slate-500 hover:text-white transition-colors">
+                      {showDebug ? 'Minimizar' : 'Expandir'}
+                   </button>
                  </div>
-              )}
+                 
+                 <div className={`transition-all duration-500 flex-1 relative rounded-2xl overflow-hidden bg-black/60 border border-white/5 shadow-2xl ${showDebug ? 'opacity-100' : 'opacity-40 grayscale pointer-events-none'}`}>
+                   <video
+                      ref={(el) => {
+                        if (el && videoRef.current && el.srcObject !== videoRef.current.srcObject) {
+                          el.srcObject = videoRef.current.srcObject;
+                          el.play().catch(() => console.log("Play interrupted"));
+                        }
+                      }}
+                      className="absolute inset-0 w-full h-full object-cover -scale-x-100"
+                      muted playsInline
+                    />
+                    <canvas ref={canvasRef} className="absolute inset-0 w-full h-full object-cover z-20" />
+                    <div className="absolute inset-0 z-10 pointer-events-none bg-gradient-to-t from-black/80 to-transparent" />
+                 </div>
+              </div>
+
+              {/* INTEGRATION STATUS CARD */}
+              <div className="glass-panel-strong rounded-3xl p-6 border border-neon/10 relative overflow-hidden group">
+                 <div className="absolute top-0 right-0 p-3 opacity-20">
+                    <ShieldCheck className="w-12 h-12 text-neon" />
+                 </div>
+                 <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-white mb-4">Neural Integration</h3>
+                 <p className="text-[9px] text-slate-500 leading-relaxed mb-6 uppercase tracking-wider">
+                    Sincronización local directa activa. No se requiere configuración manual del sistema.
+                 </p>
+                 
+                 <div className="flex items-center gap-3 bg-neon/10 border border-neon/20 p-4 rounded-2xl">
+                    <Zap className="w-4 h-4 text-neon animate-pulse" />
+                    <div>
+                      <div className="text-[9px] font-black text-white uppercase tracking-widest">Motor Activo</div>
+                      <div className="text-[8px] text-neon uppercase tracking-widest">Latencia Zero / Localhost IPC</div>
+                    </div>
+                 </div>
+              </div>
             </div>
 
           </div>
@@ -1063,216 +1225,207 @@ export default function App() {
               </button>
             </div>
 
-            <div className="p-6 space-y-7">
+            <div className="p-6 space-y-8 pb-12">
 
-              {/* Connection */}
+              {/* SECTION: MOTOR DE CONTROL */}
               <div>
                 <div className="flex items-center gap-2 mb-4">
-                  <div className="h-px flex-1" style={{ background: 'linear-gradient(to right, rgba(0,245,212,0.4), transparent)' }} />
-                  <span className="text-[10px] uppercase tracking-[0.25em] text-neon font-semibold">Conexión Backend</span>
-                  <div className="h-px flex-1" style={{ background: 'linear-gradient(to left, rgba(0,245,212,0.4), transparent)' }} />
+                  <Zap className="w-3.5 h-3.5 text-neon" />
+                  <span className="text-[10px] uppercase tracking-[0.2em] text-neon font-black">Motor de Control</span>
+                  <div className="h-px flex-1 bg-neon/10" />
                 </div>
-                <label className="block text-[10px] uppercase tracking-widest text-slate-500 mb-2">WebSocket URL</label>
-                <input
-                  type="text"
-                  value={wsUrl}
-                  onChange={(e) => handleWsUrlChange(e.target.value)}
-                  placeholder="ws://localhost:3001"
-                  className="w-full rounded-xl px-4 py-3 text-xs text-white outline-none font-mono transition-all"
-                  style={{ background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(0,245,212,0.2)', color: '#00f5d4' }}
-                />
-                <p className="text-[10px] text-slate-600 mt-2 leading-relaxed">
-                  Usa <span className="text-slate-400">ws://localhost:3001</span> en este dispositivo. Para otro dispositivo usa su IP local (ej. <span className="text-slate-400">ws://192.168.1.100:3001</span>).
-                </p>
+                
+                <div className="bg-neon/5 border border-neon/20 rounded-2xl p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Estado del Enlace</span>
+                    <div className={`flex items-center gap-1.5 px-2 py-1 rounded-lg text-[9px] font-black ${systemEnabled ? 'bg-neon/20 text-neon shadow-[0_0_10px_rgba(0,245,212,0.2)]' : 'bg-slate-500/20 text-slate-400'}`}>
+                      <div className={`w-1.5 h-1.5 rounded-full ${systemEnabled ? 'bg-neon animate-pulse' : 'bg-slate-600'}`} />
+                      {systemEnabled ? 'VINCULADO (IPC)' : 'DESCONECTADO'}
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-slate-500 leading-relaxed">
+                    Sincronización nativa mediante Electron IPC.
+                  </p>
+                </div>
               </div>
 
-              {/* Movement */}
+              {/* SECTION: PRECISIÓN Y CONTROL */}
               <div>
-                <div className="flex items-center gap-2 mb-4">
-                  <div className="h-px flex-1" style={{ background: 'linear-gradient(to right, rgba(0,245,212,0.4), transparent)' }} />
-                  <span className="text-[10px] uppercase tracking-[0.25em] text-neon font-semibold">Movimiento 3D Fluido</span>
-                  <div className="h-px flex-1" style={{ background: 'linear-gradient(to left, rgba(0,245,212,0.4), transparent)' }} />
+                <div className="flex items-center gap-2 mb-6">
+                  <Target className="w-3.5 h-3.5 text-blue-400" />
+                  <span className="text-[10px] uppercase tracking-[0.2em] text-blue-400 font-black">Precisión y Suavizado</span>
+                  <div className="h-px flex-1 bg-blue-400/10" />
                 </div>
 
-                <div className="space-y-5">
-
-                  {/* PosX */}
-                  <div>
-                    <div className="flex justify-between items-center mb-2">
-                      <span className="text-[10px] uppercase tracking-widest text-slate-400">Posición X</span>
-                      <span className="text-xs font-mono text-neon">{posSensitivityX.toFixed(1)}×</span>
+                <div className="space-y-6">
+                  {/* PosX & PosY Cluster */}
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="bg-white/5 border border-white/5 rounded-2xl p-4">
+                      <div className="flex justify-between items-center mb-3">
+                        <span className="text-[9px] uppercase tracking-widest text-slate-500 font-bold">Escala X</span>
+                        <span className="text-xs font-mono text-neon">{posSensitivityX.toFixed(1)}x</span>
+                      </div>
+                      <input type="range" min="0.5" max="3.0" step="0.1" value={posSensitivityX}
+                        onChange={e => setPosSensitivityX(parseFloat(e.target.value))}
+                        className="slider-base slider-neon w-full" />
                     </div>
-                    <input type="range" min="0.5" max="3.0" step="0.1" value={posSensitivityX}
-                      onChange={e => setPosSensitivityX(parseFloat(e.target.value))}
-                      className="slider-base slider-neon" />
+                    <div className="bg-white/5 border border-white/5 rounded-2xl p-4">
+                      <div className="flex justify-between items-center mb-3">
+                        <span className="text-[9px] uppercase tracking-widest text-slate-500 font-bold">Escala Y</span>
+                        <span className="text-xs font-mono text-neon">{posSensitivityY.toFixed(1)}x</span>
+                      </div>
+                      <input type="range" min="0.5" max="3.0" step="0.1" value={posSensitivityY}
+                        onChange={e => setPosSensitivityY(parseFloat(e.target.value))}
+                        className="slider-base slider-neon w-full" />
+                    </div>
                   </div>
 
-                  {/* PosY */}
-                  <div>
-                    <div className="flex justify-between items-center mb-2">
-                      <span className="text-[10px] uppercase tracking-widest text-slate-400">Posición Y</span>
-                      <span className="text-xs font-mono text-neon">{posSensitivityY.toFixed(1)}×</span>
+                  {/* Rotation Cluster */}
+                  <div className="p-4 rounded-2xl bg-purple-500/5 border border-purple-500/10 space-y-5">
+                    <div>
+                      <div className="flex justify-between items-center mb-2">
+                        <span className="text-[10px] uppercase tracking-widest text-purple-400/80 font-bold">Giro de Muñeca X</span>
+                        <span className="text-xs font-mono text-purple-400 font-black">{rotSensitivityX.toFixed(1)}</span>
+                      </div>
+                      <input type="range" min="0" max="6.0" step="0.2" value={rotSensitivityX}
+                        onChange={e => setRotSensitivityX(parseFloat(e.target.value))}
+                        className="slider-base slider-purple w-full" />
                     </div>
-                    <input type="range" min="0.5" max="3.0" step="0.1" value={posSensitivityY}
-                      onChange={e => setPosSensitivityY(parseFloat(e.target.value))}
-                      className="slider-base slider-neon" />
-                  </div>
-
-                  {/* RotX */}
-                  <div>
-                    <div className="flex justify-between items-center mb-2">
-                      <span className="text-[10px] uppercase tracking-widest" style={{ color: 'rgba(168,85,247,0.8)' }}>Rotación Mano X</span>
-                      <span className="text-xs font-mono" style={{ color: '#a855f7' }}>{rotSensitivityX.toFixed(1)}×</span>
+                    <div>
+                      <div className="flex justify-between items-center mb-2">
+                        <span className="text-[10px] uppercase tracking-widest text-purple-400/80 font-bold">Giro de Muñeca Y</span>
+                        <span className="text-xs font-mono text-purple-400 font-black">{rotSensitivityY.toFixed(1)}</span>
+                      </div>
+                      <input type="range" min="0" max="6.0" step="0.2" value={rotSensitivityY}
+                        onChange={e => setRotSensitivityY(parseFloat(e.target.value))}
+                        className="slider-base slider-purple w-full" />
                     </div>
-                    <input type="range" min="0" max="6.0" step="0.2" value={rotSensitivityX}
-                      onChange={e => setRotSensitivityX(parseFloat(e.target.value))}
-                      className="slider-base slider-purple" />
-                  </div>
-
-                  {/* RotY */}
-                  <div>
-                    <div className="flex justify-between items-center mb-2">
-                      <span className="text-[10px] uppercase tracking-widest" style={{ color: 'rgba(168,85,247,0.8)' }}>Rotación Mano Y</span>
-                      <span className="text-xs font-mono" style={{ color: '#a855f7' }}>{rotSensitivityY.toFixed(1)}×</span>
-                    </div>
-                    <input type="range" min="0" max="6.0" step="0.2" value={rotSensitivityY}
-                      onChange={e => setRotSensitivityY(parseFloat(e.target.value))}
-                      className="slider-base slider-purple" />
                   </div>
 
                   {/* Smoothing */}
-                  <div>
-                    <div className="flex justify-between items-center mb-2">
-                      <span className="text-[10px] uppercase tracking-widest" style={{ color: 'rgba(16,185,129,0.8)' }}>Suavizado Orgánico</span>
-                      <span className="text-xs font-mono" style={{ color: '#10b981' }}>{Math.round(smoothing * 100)}%</span>
+                  <div className="p-4 rounded-2xl bg-emerald-500/5 border border-emerald-500/10">
+                    <div className="flex justify-between items-center mb-3">
+                      <div className="flex flex-col">
+                        <span className="text-[10px] uppercase tracking-widest text-emerald-400 font-bold">Suavizado Orgánico</span>
+                        <span className="text-[8px] text-slate-500 uppercase tracking-widest mt-0.5">Filtro Antitemblor</span>
+                      </div>
+                      <span className="text-xs font-mono text-emerald-400 font-black">{Math.round(smoothing * 100)}%</span>
                     </div>
                     <input type="range" min="0.1" max="0.95" step="0.05" value={smoothing}
                       onChange={e => setSmoothing(parseFloat(e.target.value))}
-                      className="slider-base"
+                      className="slider-base w-full"
                       style={{ '--thumb-color': '#10b981' } as any} />
-                    <style>{`.slider-base.green::-webkit-slider-thumb { background: #10b981; box-shadow: 0 0 10px rgba(16,185,129,0.6); }`}</style>
                   </div>
                 </div>
               </div>
 
-              {/* Appearance */}
+              {/* SECTION: GESTICULACIÓN */}
               <div>
-                <div className="flex items-center gap-2 mb-4">
-                  <div className="h-px flex-1" style={{ background: 'linear-gradient(to right, rgba(0,245,212,0.4), transparent)' }} />
-                  <span className="text-[10px] uppercase tracking-[0.25em] text-neon font-semibold">Apariencia del Cursor</span>
-                  <div className="h-px flex-1" style={{ background: 'linear-gradient(to left, rgba(0,245,212,0.4), transparent)' }} />
+                <div className="flex items-center gap-2 mb-6">
+                  <ShieldCheck className="w-3.5 h-3.5 text-rose-400" />
+                  <span className="text-[10px] uppercase tracking-[0.2em] text-rose-400 font-black">Gesticulación e Inteligencia</span>
+                  <div className="h-px flex-1 bg-rose-400/10" />
                 </div>
 
-                <label className="block text-[10px] uppercase tracking-widest text-slate-500 mb-2">Estilo</label>
-                <select value={cursorStyle} onChange={e => setCursorStyle(e.target.value as any)}
-                  className="w-full rounded-xl px-4 py-3 text-xs text-white outline-none mb-4 transition-all"
-                  style={{ background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(0,245,212,0.2)' }}>
-                  <option value="classic">● Clásico (Flecha)</option>
-                  <option value="dot">◆ Punto Minimalista</option>
-                  <option value="crosshair">✛ Mira (Crosshair)</option>
-                  <option value="ring">◎ Anillo (Target)</option>
-                </select>
-
-                <label className="block text-[10px] uppercase tracking-widest text-slate-500 mb-2">Color</label>
-                <div className="flex gap-3">
-                  <select value={colorMode} onChange={e => setColorMode(e.target.value as any)}
-                    className="flex-1 rounded-xl px-4 py-3 text-xs text-white outline-none transition-all"
-                    style={{ background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(0,245,212,0.2)' }}>
-                    <option value="custom">Color Fijo</option>
-                    <option value="dynamic">Dinámico (Camaleón)</option>
-                  </select>
-                  {colorMode === 'custom' && (
-                    <input type="color" value={cursorColor} onChange={e => setCursorColor(e.target.value)}
-                      className="w-12 h-12 rounded-xl cursor-pointer p-1"
-                      style={{ background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(0,245,212,0.2)' }} />
-                  )}
-                </div>
-                {colorMode === 'dynamic' && (
-                  <p className="text-[10px] text-slate-600 mt-2">El cursor adopta el color del entorno detrás de tu mano.</p>
-                )}
-              </div>
-
-              {/* Gestures */}
-              <div>
-                <div className="flex items-center justify-between p-4 rounded-2xl mb-6" style={{ background: 'rgba(244,63,94,0.05)', border: '1px solid rgba(244,63,94,0.1)' }}>
-                  <div className="flex-1 pr-4">
-                    <span className="text-[10px] uppercase tracking-[0.2em] font-bold text-rose-400 block mb-1">Protección Anti-Mistouch</span>
-                    <p className="text-[9px] text-slate-500 leading-relaxed italic">Bloquea gestos automáticamente si la mano no apunta a la pantalla para evitar clics accidentales.</p>
-                  </div>
-                  <button 
-                    onClick={() => setAntiMistouch(!antiMistouch)}
-                    className={`w-12 h-6 rounded-full transition-all relative flex items-center px-1 ${antiMistouch ? 'bg-rose-500/30' : 'bg-slate-800'}`}
-                    style={{ border: `1px solid ${antiMistouch ? 'rgba(244,63,94,0.4)' : 'rgba(255,255,255,0.1)'}` }}
-                  >
-                    <div className={`w-4 h-4 rounded-full shadow-lg transform transition-all duration-300 ${antiMistouch ? 'translate-x-6 bg-rose-400' : 'translate-x-0 bg-slate-500'}`} />
-                  </button>
-                </div>
-
-                <div className="flex items-center gap-2 mb-4">
-                  <div className="h-px flex-1" style={{ background: 'linear-gradient(to right, rgba(0,245,212,0.4), transparent)' }} />
-                  <span className="text-[10px] uppercase tracking-[0.25em] text-neon font-semibold">Gestos Personalizados</span>
-                  <div className="h-px flex-1" style={{ background: 'linear-gradient(to left, rgba(0,245,212,0.4), transparent)' }} />
-                </div>
-                <p className="text-[10px] text-slate-500 mb-4 leading-relaxed">Junta el pulgar con cada dedo para activar la acción asignada.</p>
-
-                <div className="space-y-3">
-                  {(['index', 'middle', 'ring', 'pinky'] as const).map((finger, idx) => {
-                    const labels = ['Índice', 'Medio', 'Anular', 'Meñique'];
-                    const colors = ['#00f5d4', '#0ea5e9', '#a855f7', '#f59e0b'];
-                    return (
-                      <div key={finger} className="rounded-xl p-3" style={{ background: 'rgba(0,0,0,0.3)', border: `1px solid ${colors[idx]}22` }}>
-                        <label className="block text-[10px] uppercase tracking-widest mb-2 font-semibold" style={{ color: colors[idx] }}>
-                          ▸ Pulgar + {labels[idx]}
-                        </label>
-                        <select
-                          value={gestureMap[finger]}
-                          onChange={e => setGestureMap({ ...gestureMap, [finger]: e.target.value as GestureAction })}
-                          className="w-full rounded-lg px-3 py-2 text-xs text-white outline-none transition-all"
-                          style={{ background: 'rgba(0,0,0,0.5)', border: `1px solid ${colors[idx]}33` }}
-                        >
-                          {GESTURE_OPTIONS.map(opt => (
-                            <option key={opt.value} value={opt.value}>{opt.label}</option>
-                          ))}
-                        </select>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Click Effect Image */}
-              <div>
-                <div className="flex items-center gap-2 mb-4">
-                  <div className="h-px flex-1" style={{ background: 'linear-gradient(to right, rgba(0,245,212,0.4), transparent)' }} />
-                  <span className="text-[10px] uppercase tracking-[0.25em] text-neon font-semibold">Efecto Visual de Click</span>
-                  <div className="h-px flex-1" style={{ background: 'linear-gradient(to left, rgba(0,245,212,0.4), transparent)' }} />
-                </div>
-                <input
-                  type="file"
-                  accept="image/png, image/gif"
-                  onChange={handleImageUpload}
-                  className="block w-full text-[10px] text-slate-400 file:mr-3 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-[10px] file:font-bold file:uppercase file:tracking-widest file:cursor-pointer mb-3"
-                  style={{ '--file-bg': 'rgba(0,245,212,0.1)', '--file-color': '#00f5d4' } as any}
-                />
-                {clickImage && (
-                  <div className="space-y-3 p-3 rounded-xl" style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(0,245,212,0.1)' }}>
-                    <p className="text-[10px] text-slate-500">Click en la imagen para fijar el punto de anclaje:</p>
-                    <div className="flex justify-center">
-                      <div className="relative inline-block rounded-lg overflow-hidden cursor-crosshair border" style={{ borderColor: 'rgba(0,245,212,0.2)' }} onClick={handleHotspotClick}>
-                        <img src={clickImage} alt="Preview" className="max-w-[180px] max-h-[120px] object-contain pointer-events-none" />
-                        <div className="absolute w-3 h-3 rounded-full pointer-events-none -translate-x-1/2 -translate-y-1/2"
-                          style={{ left: `${clickImageHotspot.x}%`, top: `${clickImageHotspot.y}%`, border: '2px solid #f43f5e', boxShadow: '0 0 6px #f43f5e' }} />
-                      </div>
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between p-4 rounded-3xl bg-white/5 border border-white/5 hover:bg-white/10 transition-all">
+                    <div className="flex-1 pr-6">
+                      <span className="text-[10px] uppercase tracking-[0.2em] font-black text-rose-400 block mb-1">Protección Anti-Mistouch</span>
+                      <p className="text-[9px] text-slate-500 leading-relaxed">Bloquea clics accidentales si la mano pierde el ángulo de control.</p>
                     </div>
-                    <button onClick={() => setClickImage(null)}
-                      className="w-full py-2 text-[10px] font-bold uppercase tracking-widest text-rose-400 rounded-xl transition-colors"
-                      style={{ background: 'rgba(244,63,94,0.1)', border: '1px solid rgba(244,63,94,0.2)' }}>
-                      ✕ Quitar imagen
+                    <button 
+                      onClick={() => setAntiMistouch(!antiMistouch)}
+                      className={`w-12 h-7 rounded-full transition-all relative flex items-center px-1 shadow-inner ${antiMistouch ? 'bg-rose-500/40' : 'bg-slate-800'}`}
+                      style={{ border: `1px solid ${antiMistouch ? 'rgba(244,63,94,0.4)' : 'rgba(255,255,255,0.1)'}` }}
+                    >
+                      <div className={`w-5 h-5 rounded-full shadow-xl transform transition-all duration-500 ${antiMistouch ? 'translate-x-5 bg-white' : 'translate-x-0 bg-slate-500'}`} />
                     </button>
                   </div>
-                )}
+
+                  <div className="bg-white/5 border border-white/5 rounded-3xl p-5 space-y-4">
+                    <span className="text-[10px] uppercase tracking-widest text-slate-500 font-bold block pb-2 border-b border-white/5">Mapeo de Dedos (Pinza)</span>
+                    <div className="grid grid-cols-1 gap-3">
+                      {(['index', 'middle', 'ring', 'pinky'] as const).map((finger, idx) => {
+                        const labels = ['Índice', 'Medio', 'Anular', 'Meñique'];
+                        const colors = ['#00f5d4', '#0ea5e9', '#a855f7', '#f59e0b'];
+                        return (
+                          <div key={finger} className="flex items-center gap-3">
+                            <div className="w-1.5 h-6 rounded-full" style={{ background: colors[idx] }} />
+                            <div className="flex-1 flex items-center justify-between bg-black/30 rounded-xl px-4 py-2 border border-white/5">
+                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{labels[idx]}</span>
+                              <select
+                                value={gestureMap[finger]}
+                                onChange={e => setGestureMap({ ...gestureMap, [finger]: e.target.value as GestureAction })}
+                                className="bg-transparent text-[10px] font-black text-neon uppercase tracking-widest outline-none cursor-pointer text-right min-w-[120px]"
+                              >
+                                {GESTURE_OPTIONS.map(opt => (
+                                  <option key={opt.value} value={opt.value} className="bg-slate-900">{opt.label}</option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
               </div>
 
+              {/* SECTION: APARIENCIA */}
+              <div>
+                <div className="flex items-center gap-2 mb-6">
+                  <Camera className="w-3.5 h-3.5 text-amber-400" />
+                  <span className="text-[10px] uppercase tracking-[0.2em] text-amber-400 font-black">Identidad Visual</span>
+                  <div className="h-px flex-1 bg-amber-400/10" />
+                </div>
+
+                <div className="space-y-4 bg-white/5 border border-white/5 rounded-3xl p-5">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                       <label className="text-[9px] uppercase tracking-[0.2em] text-slate-500 font-bold">Estilo de Cursor</label>
+                       <select value={cursorStyle} onChange={e => setCursorStyle(e.target.value as any)}
+                        className="w-full rounded-xl bg-black/40 border border-white/10 px-3 py-2 text-xs text-white outline-none">
+                        <option value="classic">Clásico</option>
+                        <option value="dot">Punto</option>
+                        <option value="crosshair">Mira</option>
+                        <option value="ring">Anillo</option>
+                      </select>
+                    </div>
+                    <div className="space-y-2">
+                       <label className="text-[9px] uppercase tracking-[0.2em] text-slate-500 font-bold">Modo de Color</label>
+                       <select value={colorMode} onChange={e => setColorMode(e.target.value as any)}
+                        className="w-full rounded-xl bg-black/40 border border-white/10 px-3 py-2 text-xs text-neon outline-none font-bold">
+                        <option value="custom">Fijo</option>
+                        <option value="dynamic">Dinámico</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {colorMode === 'custom' && (
+                    <div className="flex items-center justify-between p-3 rounded-2xl bg-black/20 border border-white/5">
+                      <span className="text-[10px] uppercase tracking-widest text-slate-400">Color Personalizado</span>
+                      <input type="color" value={cursorColor} onChange={e => setCursorColor(e.target.value)}
+                        className="w-10 h-8 rounded-lg cursor-pointer bg-transparent border-none" />
+                    </div>
+                  )}
+
+                  <div className="pt-4 border-t border-white/5">
+                    <span className="text-[9px] uppercase tracking-[0.2em] text-slate-500 font-bold block mb-3 text-center">Efecto Visual de Click</span>
+                    <input
+                      type="file"
+                      accept="image/png, image/gif"
+                      onChange={handleImageUpload}
+                      className="block w-full text-[10px] text-slate-400 file:mr-3 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-[10px] file:font-bold file:uppercase file:tracking-widest file:bg-neon/10 file:text-neon file:cursor-pointer"
+                    />
+                    {clickImage && (
+                      <button onClick={() => setClickImage(null)}
+                        className="w-full mt-3 py-2 text-[9px] font-black uppercase tracking-widest text-rose-400 rounded-xl bg-rose-500/10 border border-rose-500/20 hover:bg-rose-500/20 transition-all">
+                        Eliminar Efecto
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -1393,111 +1546,240 @@ export default function App() {
         );
       })()}
 
-      {/* ─────────── ONBOARDING / INSTALL GUIDE ─────────── */}
-      {showOnboarding && (
-        <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 pointer-events-auto"
-          style={{ background: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(20px)', animation: 'fadeInUp 0.3s ease' }}>
-          <div className="glass-panel-strong rounded-3xl p-8 max-w-lg w-full shadow-2xl overflow-y-auto max-h-[90vh] custom-scrollbar">
+      {/* ─────────── AUTOMATED SETUP OVERLAY ─────────── */}
+      {setupStep !== 'ready' && (
+        <div className="fixed inset-0 z-[100000] flex items-center justify-center p-6 bg-[#050a16] pointer-events-auto"
+          style={{ animation: 'fadeIn 0.5s ease' }}>
+          
+          {/* Background visuals */}
+          <div className="absolute inset-0 opacity-20 pointer-events-none">
+            <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-neon/20 rounded-full blur-[120px] animate-pulse" />
+            <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-blue-500/20 rounded-full blur-[120px] animate-pulse" style={{ animationDelay: '2s' }} />
+          </div>
 
-            {/* WS status at top */}
-            <div className="flex items-center gap-2 mb-5">
-              <div className={`w-2.5 h-2.5 rounded-full ${
-                wsStatus === 'connected' ? 'status-dot-connected' :
-                wsStatus === 'connecting' ? 'status-dot-connecting animate-pulse' :
-                wsStatus === 'error' ? 'status-dot-error' : 'status-dot-disconnected'
-              }`} />
-              <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">
-                {wsStatus === 'connected' ? 'PC Conectada' :
-                 wsStatus === 'connecting' ? 'Buscando PC...' :
-                 wsStatus === 'error' ? 'Error de Conexión' : 'Sin Conexión'}
-              </span>
+          <div className="relative glass-panel-strong rounded-[40px] p-12 max-w-xl w-full shadow-2xl border-white/10 text-center">
+            
+            {/* Icon Stage */}
+            <div className="mb-8 flex justify-center">
+              <div className="w-24 h-24 rounded-[32px] bg-gradient-to-br from-neon to-blue-500 flex items-center justify-center shadow-[0_0_50px_rgba(0,245,212,0.3)] animate-bounce-slow">
+                {setupStep === 'checking' && <Zap className="w-10 h-10 text-black animate-pulse" />}
+                {setupStep === 'permissions' && <ShieldCheck className="w-10 h-10 text-black" />}
+                {setupStep === 'installing' && <Settings2 className="w-10 h-10 text-black animate-spin-slow" />}
+              </div>
             </div>
 
-            <div className="flex justify-between items-center mb-7">
-              <h2 className="text-xl font-bold text-white flex items-center gap-3">
-                <div className="w-10 h-10 rounded-2xl flex items-center justify-center flex-shrink-0"
-                  style={{ background: 'linear-gradient(135deg, #00f5d4, #0ea5e9)', boxShadow: '0 0 20px rgba(0,245,212,0.3)' }}>
-                  <MousePointer2 className="w-5 h-5 text-black" />
+            <h2 className="text-3xl font-black text-white mb-4 tracking-tight">
+              {setupStep === 'checking' && 'Inicializando...'}
+              {setupStep === 'permissions' && 'Permisos Requeridos'}
+              {setupStep === 'installing' && 'Optimizando Sistema'}
+            </h2>
+
+            <p className="text-slate-400 text-lg mb-10 leading-relaxed font-light">
+              {setupStep === 'checking' && 'Neural Cursor está preparando el núcleo de procesamiento biométrico.'}
+              {setupStep === 'permissions' && 'Para que el tracking funcione, necesitamos acceso a la cámara y control del sistema.'}
+              {setupStep === 'installing' && 'Estamos configurando los módulos de inteligencia artificial en segundo plano.'}
+            </p>
+
+            {/* Progress / Action */}
+            <div className="space-y-4">
+              {setupStep === 'permissions' ? (
+                <div className="flex flex-col gap-6">
+                  <div className="grid grid-cols-2 gap-4">
+                    <button
+                      onClick={async () => {
+                        const granted = await electronAPI.requestCamera();
+                        if (!granted) electronAPI.openCameraSettings();
+                      }}
+                      className={`flex flex-col items-center justify-center p-6 rounded-3xl border transition-all duration-300 group relative overflow-hidden ${cameraAllowed ? 'bg-neon/10 border-neon/40 shadow-[0_0_20px_rgba(0,245,212,0.1)]' : 'bg-white/5 border-white/10 hover:bg-white/10'}`}
+                    >
+                      {cameraAllowed && <div className="absolute top-2 right-2 w-2 h-2 rounded-full bg-neon animate-pulse" />}
+                      <div className="relative mb-3">
+                        <Camera className={`w-10 h-10 transition-all duration-500 ${cameraAllowed ? 'text-neon drop-shadow-[0_0_8px_rgba(0,245,212,0.6)]' : 'text-slate-500 group-hover:scale-110'}`} />
+                        {cameraAllowed && <div className="absolute -top-1 -right-1 w-5 h-5 bg-neon rounded-full flex items-center justify-center border-2 border-[#050a16] shadow-lg"><div className="w-2 h-1.5 border-b-2 border-r-2 border-black rotate-45 -mt-0.5" /></div>}
+                      </div>
+                      <span className={`text-xs font-black uppercase tracking-widest mb-1 ${cameraAllowed ? 'text-neon' : 'text-slate-400'}`}>Cámara</span>
+                      <span className={`text-[8px] font-bold uppercase tracking-[0.2em] ${cameraAllowed ? 'text-neon/60' : 'text-slate-600'}`}>
+                        {cameraAllowed ? 'Cerebro Vinculado' : 'Acceso Requerido'}
+                      </span>
+                    </button>
+                    
+                    <button
+                      onClick={() => electronAPI.openAccessibility()}
+                      className={`flex flex-col items-center justify-center p-6 rounded-3xl border transition-all duration-300 group relative overflow-hidden ${accessibilityAllowed ? 'bg-neon/10 border-neon/40 shadow-[0_0_20px_rgba(0,245,212,0.1)]' : 'bg-white/5 border-white/10 hover:bg-white/10'}`}
+                    >
+                      {accessibilityAllowed && <div className="absolute top-2 right-2 w-2 h-2 rounded-full bg-neon animate-pulse" />}
+                      <div className="relative mb-3">
+                        <ShieldCheck className={`w-10 h-10 transition-all duration-500 ${accessibilityAllowed ? 'text-neon drop-shadow-[0_0_8px_rgba(0,245,212,0.6)]' : 'text-slate-500 group-hover:scale-110'}`} />
+                        {accessibilityAllowed && <div className="absolute -top-1 -right-1 w-5 h-5 bg-neon rounded-full flex items-center justify-center border-2 border-[#050a16] shadow-lg"><div className="w-2 h-1.5 border-b-2 border-r-2 border-black rotate-45 -mt-0.5" /></div>}
+                      </div>
+                      <span className={`text-xs font-black uppercase tracking-widest mb-1 ${accessibilityAllowed ? 'text-neon' : 'text-slate-400'}`}>Accesibilidad</span>
+                      <span className={`text-[8px] font-bold uppercase tracking-[0.2em] ${accessibilityAllowed ? 'text-neon/60' : 'text-slate-600'}`}>
+                        {accessibilityAllowed ? 'Control Activo' : 'Acceso Requerido'}
+                      </span>
+                    </button>
+                  </div>
+                  
+                  <div className="bg-white/5 border border-white/10 rounded-2xl p-4 text-[10px] text-slate-400 leading-relaxed space-y-3">
+                    <p className="flex items-start gap-3">
+                      <span className="text-neon mt-0.5">ℹ</span>
+                      <span>Si el botón no activa el mensaje del sistema o ya habías denegado el permiso antes, se abrirán los **Ajustes de Privacidad** para que puedas activarlo manualmente.</span>
+                    </p>
+                    
+                    {!accessibilityAllowed && (
+                      <div className="pt-2 border-t border-white/5 space-y-2">
+                        <p className="font-bold text-rose-400 flex items-center gap-2">
+                          <Info className="w-3 h-3" />
+                          <span>¿Problemas con la Accesibilidad?</span>
+                        </p>
+                        <p>Si ya activaste el permiso pero la app NO lo detecta, intenta esto:</p>
+                        <ol className="list-decimal list-inside space-y-1 ml-1">
+                          <li>Desactiva y vuelve a activar el switch en Ajustes.</li>
+                          <li>Si eso falla, usa el botón de abajo para forzar un reinicio.</li>
+                        </ol>
+                        <button
+                          onClick={async () => {
+                            const ok = await (window as any).electronAPI.resetAccessibilityPermissions();
+                            if (ok) {
+                              alert("Permisos reiniciados. Neural Cursor desaparecerá de la lista. Por favor, pulsa 'Accesibilidad' de nuevo para volver a añadirlo.");
+                            }
+                          }}
+                          className="w-full py-2 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 text-[9px] font-bold uppercase tracking-wider hover:bg-rose-500/20 transition-all"
+                        >
+                          Reiniciar Permisos de Accesibilidad
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  
+                  <button
+                    onClick={handleGrantPermissions}
+                    className="w-full py-5 rounded-2xl bg-neon text-black font-black uppercase tracking-[0.2em] text-sm shadow-[0_0_30px_rgba(0,245,212,0.4)] hover:scale-[1.02] active:scale-95 transition-all mt-2"
+                  >
+                    Confirmar y Entrar →
+                  </button>
+                  
+                  <p className="text-[9px] text-slate-500 uppercase tracking-widest animate-pulse mt-2 text-center">
+                    La aplicación detectará los permisos automáticamente.
+                  </p>
                 </div>
-                Configuración Inicial
-              </h2>
-              <button onClick={closeOnboarding}
-                className="p-2 rounded-xl text-slate-400 hover:text-white transition-colors"
-                style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)' }}>
-                <X className="w-5 h-5" />
+              ) : (
+                <div className="flex flex-col items-center gap-4">
+                  <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden">
+                    <div className="h-full bg-neon animate-progress-indefinite shadow-[0_0_10px_#00f5d4]" />
+                  </div>
+                  <span className="text-neon font-mono text-[11px] uppercase tracking-[0.3em] animate-pulse">
+                    {installMessage}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            <div className="mt-12 pt-8 border-t border-white/5 flex items-center justify-center gap-8 opacity-40">
+               <div className="flex items-center gap-2">
+                 <div className="w-1.5 h-1.5 rounded-full bg-slate-400" />
+                 <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Silent OS Integration</span>
+               </div>
+               <div className="flex items-center gap-2">
+                 <div className="w-1.5 h-1.5 rounded-full bg-slate-400" />
+                 <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">AES-256 Encrypted</span>
+               </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Interaction Guide Modal */}
+      {showOnboarding && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 sm:p-8 animate-fadeIn">
+          <div className="absolute inset-0 bg-black/80 backdrop-blur-xl" onClick={closeOnboarding} />
+          
+          <div className="relative glass-panel-strong w-full max-w-4xl max-h-[90vh] rounded-[2.5rem] overflow-hidden flex flex-col shadow-[0_0_100px_rgba(0,0,0,0.8)] border border-white/10 animate-slide-in-top">
+            {/* Header */}
+            <div className="p-8 sm:p-10 border-b border-white/5 flex items-center justify-between">
+              <div>
+                <h2 className="text-2xl sm:text-3xl font-black uppercase tracking-[0.2em] text-neon">Guía de Interacción</h2>
+                <p className="text-[10px] sm:text-xs text-slate-400 uppercase tracking-[0.3em] mt-2">Neural Cursor x macOS Integration</p>
+              </div>
+              <button 
+                onClick={closeOnboarding}
+                className="w-12 h-12 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center hover:bg-white/10 transition-all group"
+              >
+                <X className="w-6 h-6 text-slate-400 group-hover:text-white transition-colors" />
               </button>
             </div>
 
-            <div className="space-y-6">
-
-              {/* Step 1 */}
-              <div className="flex gap-4 p-4 rounded-2xl" style={{ background: 'rgba(0,245,212,0.04)', border: '1px solid rgba(0,245,212,0.1)' }}>
-                <div className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center font-bold text-sm text-black" style={{ background: 'linear-gradient(135deg, #00f5d4, #0ea5e9)' }}>1</div>
-                <div>
-                  <h3 className="text-white font-semibold mb-1">Inicia el Servidor</h3>
-                  <p className="text-slate-400 text-xs mb-3 leading-relaxed">Copia y pega este comando en tu Terminal para iniciar el controlador:</p>
-                  <code className="block p-3 rounded-xl text-[10px] text-neon border font-mono leading-relaxed" style={{ background: 'rgba(0,0,0,0.6)', borderColor: 'rgba(0,245,212,0.2)' }}>
-                    cd ~/Downloads/hand-tracking-cursor && python3 mouse_controller.py
-                  </code>
+            {/* Content */}
+            <div className="flex-1 overflow-y-auto p-8 sm:p-10 custom-scrollbar">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                {/* Step 1: Movement */}
+                <div className="p-6 rounded-3xl bg-white/5 border border-white/5 hover:border-neon/30 transition-all group">
+                  <div className="w-12 h-12 rounded-2xl bg-neon/10 border border-neon/20 flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
+                    <MousePointer2 className="w-6 h-6 text-neon" />
+                  </div>
+                  <h3 className="text-sm font-black uppercase tracking-widest text-white mb-3">Movimiento Fluido</h3>
+                  <p className="text-xs text-slate-400 leading-relaxed mb-4">
+                    Mueve el **dedo índice** para desplazar el cursor por toda la pantalla de tu Mac, incluso fuera de esta ventana.
+                  </p>
+                  <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-black/40 border border-white/5">
+                    <div className="w-1.5 h-1.5 rounded-full bg-neon animate-pulse" />
+                    <span className="text-[9px] font-bold uppercase tracking-widest text-neon/80">Control Global Activado</span>
+                  </div>
                 </div>
-              </div>
 
-              {/* Step 2 */}
-              <div className="flex gap-4 p-4 rounded-2xl" style={{ background: 'rgba(14,165,233,0.04)', border: '1px solid rgba(14,165,233,0.1)' }}>
-                <div className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center font-bold text-sm text-black" style={{ background: 'linear-gradient(135deg, #0ea5e9, #6366f1)' }}>2</div>
-                <div>
-                  <h3 className="text-white font-semibold mb-1">Permisos de macOS</h3>
-                  <p className="text-slate-400 text-xs leading-relaxed">Activa <span className="text-slate-200 font-semibold">Accesibilidad</span> para tu Terminal:</p>
-                  <p className="text-[10px] italic mt-1" style={{ color: 'rgba(14,165,233,0.7)' }}>Settings → Privacy & Security → Accessibility</p>
-                </div>
-              </div>
-
-              {/* Step 3 */}
-              <div className="flex gap-4 p-4 rounded-2xl" style={{ background: 'rgba(168,85,247,0.04)', border: '1px solid rgba(168,85,247,0.1)' }}>
-                <div className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center font-bold text-sm text-white" style={{ background: 'linear-gradient(135deg, #a855f7, #ec4899)' }}>3</div>
-                <div className="flex-1">
-                  <h3 className="text-white font-semibold mb-1">Conecta el Dispositivo</h3>
-                  <p className="text-slate-400 text-xs mb-3 leading-relaxed">Si usas el link automático ya deberías estar conectado. Si no, ingresa la IP de tu Mac:</p>
-                  <input
-                    type="text"
-                    value={wsUrl}
-                    onChange={(e) => handleWsUrlChange(e.target.value)}
-                    placeholder="ws://192.168.1.XX:3001"
-                    className="w-full rounded-xl px-4 py-2 text-xs text-white outline-none transition-all font-mono"
-                    style={{ background: 'rgba(0,0,0,0.5)', border: '1px solid rgba(168,85,247,0.3)', color: '#a855f7' }}
-                  />
-                </div>
-              </div>
-
-              {/* HTTPS warning */}
-              {wsStatus === 'error' && window.location.protocol === 'https:' && (
-                <div className="p-4 rounded-2xl flex items-start gap-3" style={{ background: 'rgba(244,63,94,0.08)', border: '1px solid rgba(244,63,94,0.2)' }}>
-                  <span className="text-rose-400 text-lg flex-shrink-0">⚠</span>
-                  <p className="text-[10px] text-rose-300 leading-relaxed">
-                    <b className="text-rose-400 uppercase tracking-widest">Bloqueo HTTPS:</b> Tu navegador no permite la conexión desde HTTPS a un servidor local.
-                    Abre el link HTTP de la terminal (sin la 's') o permite contenido no seguro.
+                {/* Step 2: Left Click */}
+                <div className="p-6 rounded-3xl bg-white/5 border border-white/5 hover:border-neon/30 transition-all group">
+                  <div className="w-12 h-12 rounded-2xl bg-neon/10 border border-neon/20 flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
+                    <Target className="w-6 h-6 text-neon" />
+                  </div>
+                  <h3 className="text-sm font-black uppercase tracking-widest text-white mb-3">Click Izquierdo</h3>
+                  <p className="text-xs text-slate-400 leading-relaxed">
+                    Junta rápidamente el **pulgar y el dedo índice** (gesto de pinza). Es ideal para seleccionar y abrir aplicaciones.
                   </p>
                 </div>
-              )}
 
-              {/* Pro tip */}
-              <div className="p-4 rounded-2xl flex items-start gap-3" style={{ background: 'rgba(0,245,212,0.06)', border: '1px solid rgba(0,245,212,0.15)' }}>
-                <span className="text-neon text-base flex-shrink-0">✦</span>
-                <p className="text-[10px] text-slate-400 leading-relaxed">
-                  <b className="text-neon uppercase tracking-widest">Modo Fondo:</b> El sistema ejecuta el tracking en segundo plano automáticamente usando un Web Worker, sin necesidad de configuración adicional.
-                </p>
+                {/* Step 3: Right Click */}
+                <div className="p-6 rounded-3xl bg-white/5 border border-white/5 hover:border-blue-500/30 transition-all group">
+                  <div className="w-12 h-12 rounded-2xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
+                    <Settings2 className="w-6 h-6 text-blue-400" />
+                  </div>
+                  <h3 className="text-sm font-black uppercase tracking-widest text-blue-400 mb-3">Click Derecho</h3>
+                  <p className="text-xs text-slate-400 leading-relaxed">
+                    Junta el **pulgar con el dedo corazón** para abrir menús contextuales en cualquier parte del sistema.
+                  </p>
+                </div>
+
+                {/* Step 4: Scroll */}
+                <div className="p-6 rounded-3xl bg-white/5 border border-white/5 hover:border-amber-500/30 transition-all group">
+                  <div className="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
+                    <MousePointer2 className="w-6 h-6 text-amber-400 rotate-90" />
+                  </div>
+                  <h3 className="text-sm font-black uppercase tracking-widest text-amber-400 mb-3">Desplazamiento</h3>
+                  <p className="text-xs text-slate-400 leading-relaxed">
+                    Junta el **pulgar con el dedo anular** y mueve la mano hacia arriba o abajo para hacer scroll en páginas web y documentos.
+                  </p>
+                </div>
               </div>
 
-              {/* CTA */}
-              <button
+              {/* Pro Tip */}
+              <div className="mt-10 p-6 rounded-3xl bg-neon/5 border border-neon/20 flex items-center gap-6">
+                <div className="w-14 h-14 rounded-2xl bg-black/40 flex items-center justify-center flex-shrink-0 border border-neon/30">
+                  <Zap className="w-7 h-7 text-neon" />
+                </div>
+                <div>
+                  <h4 className="text-xs font-black uppercase tracking-widest text-neon">Consejo de Pro</h4>
+                  <p className="text-[11px] text-slate-400 leading-relaxed mt-1">
+                    Para mayor precisión, puedes ajustar la **Sensibilidad** y el **Suavizado** en el panel de Ajustes. El sistema funciona mejor con buena iluminación.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="p-8 sm:p-10 bg-black/20 border-t border-white/5">
+              <button 
                 onClick={closeOnboarding}
-                className="w-full py-4 font-bold rounded-2xl text-sm uppercase tracking-widest text-black transition-all active:scale-95"
-                style={{
-                  background: 'linear-gradient(135deg, #00f5d4 0%, #0ea5e9 100%)',
-                  boxShadow: '0 0 30px rgba(0,245,212,0.3)'
-                }}
+                className="w-full py-5 rounded-2xl bg-neon text-black font-black uppercase tracking-[0.2em] text-sm shadow-[0_0_40px_rgba(0,245,212,0.3)] hover:scale-[1.02] active:scale-95 transition-all"
               >
-                ¡Activar Sistema →
+                Entendido, ¡Empezar a Controlar!
               </button>
             </div>
           </div>

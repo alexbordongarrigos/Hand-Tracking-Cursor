@@ -1,7 +1,0 @@
-{
-  "name": "Hand Tracking Cursor",
-  "description": "A virtual cursor controlled by hand gestures using the webcam.",
-  "requestFramePermissions": [
-    "camera"
-  ]
-}
